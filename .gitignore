@@ -1,5 +1,7 @@
 # Secrets – NIEMALS hochladen!
 API.env
+Lummerland_Output
+era5_data
 
 # Python
 __pycache__/
