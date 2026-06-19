@@ -30,9 +30,7 @@ import warnings
 #   CDS_KEY=dein-key-hier
 #   GRB_WLSACCESSID=dein-access-id
 #   GRB_WLSSECRET=dein-secret
-#   GRB_LICENSEID=1234567git config --global user.name "Dein Name"
-git config --global user.email "deine@email.com"
-#
+#   GRB_LICENSEID=1234567
 # Dann werden die Keys automatisch geladen – nie mehr im Code ändern!
 def _load_dotenv() -> None:
     """Lädt .env-Datei aus dem Skriptverzeichnis (kein Paket nötig)."""
