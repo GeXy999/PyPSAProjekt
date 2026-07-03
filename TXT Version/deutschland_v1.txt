@@ -431,14 +431,12 @@ def solve_network(net, verbose=True) -> bool:
     if USE_GUROBI:
         try:
             net.optimize(solver_name="gurobi",
-                         assign_all_duals=True,
                          solver_options={"env": _get_gurobi_env(),
                                          "OutputFlag": int(verbose)})
             return True
         except Exception as e:
             print(f"  ⚠ Gurobi: {e} → HiGHS")
     net.optimize(solver_name="highs",
-                 assign_all_duals=True,
                  solver_options={"time_limit": 900})
     return False
 

@@ -88,9 +88,9 @@ if not era5_ok:
 
 FARBEN = dm.CARRIER_COLORS
 
-tab_disp, tab_kap, tab_preis, tab_spei, tab_karte, tab_eng, tab_mc, tab_pdf = st.tabs(
+tab_disp, tab_kap, tab_preis, tab_spei, tab_karte, tab_mc, tab_pdf = st.tabs(
     ["📊 Dispatch", "🏗️ Kapazitäten", "💶 Preise", "🔋 Speicher & H₂",
-     "🗺️ Karte", "🚧 Engpässe", "🎲 Monte-Carlo", "📄 Bericht"])
+     "🗺️ Karte", "🎲 Monte-Carlo", "📄 Bericht"])
 
 # ── Dispatch ──────────────────────────────────────────────────────────
 with tab_disp:
@@ -211,77 +211,6 @@ with tab_karte:
     st.plotly_chart(fig, width="stretch")
     st.caption("Grün <50 % · Gelb 50–80 % · Rot >80 % mittlere Auslastung · "
                "gestrichelt = Offshore-Anbindung")
-
-# ── Engpässe & Schattenpreise ─────────────────────────────────────────
-with tab_eng:
-    # abs(): linopy liefert Duale von Obergrenzen mit negativem Vorzeichen
-    mu_line = getattr(n.lines_t, "mu_upper", pd.DataFrame()).abs()
-    mu_gen  = getattr(n.generators_t, "mu_upper", pd.DataFrame()).abs()
-    if mu_line.empty and mu_gen.empty:
-        st.warning("Keine Schattenpreise im Ergebnis – der gecachte Lauf "
-                   "stammt noch von vor der Umstellung auf "
-                   "`assign_all_duals=True`. Einmal neu rechnen:")
-        if st.button("🔄 Cache leeren & neu optimieren"):
-            solve.clear()
-            st.rerun()
-        st.stop()
-
-    st.subheader("Leitungsengpässe")
-    st.caption("Schattenpreis = Systemkosten-Ersparnis pro zusätzlichem MW "
-               "Leitungskapazität in dieser Stunde (€/MWh)")
-    eng = pd.DataFrame({
-        "Leitung": n.lines.index,
-        "Kapazität (GW)": n.lines.s_nom_opt.values / 1000.,
-        "Ø Auslastung (%)": [
-            100. * abs(n.lines_t.p0[ln]).mean()
-            / max(float(n.lines.s_nom_opt[ln]), 1.) for ln in n.lines.index],
-        "Engpass-Stunden (h/a)": [
-            int((mu_line[ln] > 0.01).sum()) * dm.TIME_RES
-            if ln in mu_line else 0 for ln in n.lines.index],
-        "Ø Schattenpreis (€/MWh)": mu_line.mean().reindex(n.lines.index).values,
-        "Max (€/MWh)": mu_line.max().reindex(n.lines.index).values})
-    eng = eng.sort_values("Engpass-Stunden (h/a)", ascending=False)
-    c1, c2 = st.columns(2)
-    c1.dataframe(eng.round(2), width="stretch", hide_index=True)
-    c2.plotly_chart(px.bar(eng, x="Leitung", y="Engpass-Stunden (h/a)",
-                           color="Ø Schattenpreis (€/MWh)",
-                           color_continuous_scale="OrRd",
-                           title="Stunden am Kapazitätslimit"),
-                    width="stretch")
-    if not mu_line.empty:
-        wo_l = mu_line.resample("W").mean()
-        st.plotly_chart(px.line(wo_l, labels={"value": "€/MWh", "snapshot": ""},
-                                title="Leitungs-Schattenpreise (Wochenmittel)"),
-                        width="stretch")
-
-    st.subheader("Kapazitätsknappheit der Erzeuger")
-    st.caption("Wert eines zusätzlichen MW Erzeugungskapazität, wenn die "
-               "Anlage an ihrer Leistungsgrenze läuft")
-    knapp = pd.DataFrame({
-        "Anlage": mu_gen.columns,
-        "Träger": n.generators.carrier.reindex(mu_gen.columns).values,
-        "Knappe Stunden (h/a)": (mu_gen > 0.01).sum().values * dm.TIME_RES,
-        "Ø Schattenpreis (€/MWh)": mu_gen.mean().values,
-        "Max (€/MWh)": mu_gen.max().values})
-    knapp = knapp.sort_values("Ø Schattenpreis (€/MWh)",
-                              ascending=False).reset_index(drop=True)
-    c1, c2 = st.columns(2)
-    c1.dataframe(knapp.round(2), width="stretch", hide_index=True)
-    c2.plotly_chart(px.bar(knapp.head(12), x="Ø Schattenpreis (€/MWh)",
-                           y="Anlage", color="Träger", orientation="h",
-                           color_discrete_map=FARBEN,
-                           title="Top 12 nach Ø Schattenpreis"),
-                    width="stretch")
-
-    st.subheader("Sektorpreise (Knotenpreise Wärme & H₂)")
-    st.caption("Grenzkosten einer zusätzlichen MWh Wärme bzw. Wasserstoff – "
-               "das Preissignal der Sektorkopplung")
-    sektor = n.buses_t.marginal_price[
-        ["H2_Bus"] + [f"Waerme_{r}" for r in dm.REGIONS]]
-    wo_s = sektor.resample("W").mean()
-    st.plotly_chart(px.line(wo_s, labels={"value": "€/MWh", "snapshot": ""},
-                            title="H₂- und Wärmepreise (Wochenmittel)"),
-                    width="stretch")
 
 # ── Monte-Carlo ───────────────────────────────────────────────────────
 with tab_mc:
