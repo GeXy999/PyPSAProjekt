@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 # =============================================================
-#  🏝️  LUMMERLAND ISLAND ENERGY MODEL v3.0  (final)
+#  🏝️  LUMMERLAND ISLAND ENERGY MODEL v4.3  – Lummerland + Lummerstadt (Greifswald)
 #  Reines Python-Skript – kein Jupyter / Colab erforderlich
-#  Ausführen: python Lummerland_v3_final.py
+#  Ausführen: python Lummerland_v4_2.py
 #
-#  VERBESSERUNGEN:
-#  ✓ .env-Datei Support (API-Keys sicher & bequem)
-#  ✓ Imports nach PEP 8 sortiert (stdlib / third-party getrennt)
-#  ✓ warnings.filterwarnings erst NACH den Imports
-#  ✓ _style_ax() Hilfsfunktion – kein Copy-Paste mehr
-#  ✓ Type Hints + Docstrings für alle Funktionen
-#  ✓ Spezifische except-Klauseln statt blankem "except:"
-#  ✓ FIX 1: p_nom_max / e_nom_max Bounds gesetzt
-#  ✓ FIX 2: assign_solution() nach optimize()
-#  ✓ FIX 3: Monte-Carlo Solver – Gurobi bevorzugt, HiGHS 600s
-#  ✓ FIX 4: Warnung bei negativem Objective
+#  VERBESSERUNGEN gegenüber v3:
+#  ✓ Lummerstadt (Greifswald) als neuer Netzknoten
+#  ✓ Seekabel Nord ↔ Lummerstadt (50 MW)
+#  ✓ Seekabel Offshore ↔ Lummerstadt (40 MW)
+#  ✓ Lummerstadt: Wind (40 MW) + Solar (20 MW) + Gas (25 MW)
+#  ✓ Wärmepumpe + Wärmespeicher für Lummerstadt
+#  ✓ ERA5-Koordinaten Greifswald-Küste (13.2–14.0°E, 54.0–54.6°N)
+#  ✓ Erweiterte Karte mit Festland-Küstenstreifen
+#  ✓ Alle Texte, Plots und Dateinamen auf v4 aktualisiert
 # =============================================================
 
 # ── stdlib ───────────────────────────────────────────────────
@@ -59,20 +57,24 @@ import matplotlib.gridspec as gridspec
 import matplotlib.patheffects as pe
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.lines import Line2D
-from matplotlib.patches import Ellipse, FancyBboxPatch
+from matplotlib.patches import Ellipse, FancyBboxPatch, Polygon, Circle
+
+from lummerland_v4_2_plots import create_plot_bundle, write_simple_pdf
 
 # Erst NACH allen Imports unterdrücken
 warnings.filterwarnings("ignore")
 
-# =============================================================
-#  🔑 API-KEYS
-#  Priorität: .env-Datei > Umgebungsvariable > Fallback unten
-#  Trage deine Keys entweder hier ein ODER (besser) in .env
-# =============================================================
-CDS_KEY         = os.environ.get("CDS_KEY",         "bda61c6b-219b-4c88-bdb7-3b61b545877c")
-GRB_WLSACCESSID = os.environ.get("GRB_WLSACCESSID", "964574c6-e2bc-4a47-ba1a-ba2bbab3e89b")
-GRB_WLSSECRET   = os.environ.get("GRB_WLSSECRET",   "7d4f3f5e-5788-4d15-bfc5-c1d36a1fda38")
-GRB_LICENSEID   = int(os.environ.get("GRB_LICENSEID", "2835597"))
+from dotenv import load_dotenv
+load_dotenv()  # liest .env automatisch
+CDS_KEY = os.getenv("CDS_KEY", "")
+GRB_WLSACCESSID = os.getenv("GRB_WLSACCESSID", "")
+GRB_WLSSECRET   = os.getenv("GRB_WLSSECRET",   "")
+_grb_lid_raw    = os.getenv("GRB_LICENSEID",    "")
+try:
+    GRB_LICENSEID = int(_grb_lid_raw) if _grb_lid_raw else None
+except ValueError:
+    GRB_LICENSEID = None
+    print("⚠ GRB_LICENSEID aus .env ist keine gueltige Zahl")
 
 # =============================================================
 #  0) ABHÄNGIGKEITEN AUTO-INSTALLIEREN
@@ -124,13 +126,14 @@ except Exception:
 # =============================================================
 #  1) AUSGABE-ORDNER & PFADE
 # =============================================================
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Lummerland_Output")
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Lummerland_v4_3_Output")
 ERA5_DIR   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "era5_data")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(ERA5_DIR,   exist_ok=True)
 
 _path_onshore  = os.path.join(ERA5_DIR, "lummerland_era5_onshore_2023.nc")
 _path_offshore = os.path.join(ERA5_DIR, "lummerland_era5_offshore_2023.nc")
+_path_lummerstadt_onshore = os.path.join(ERA5_DIR, "lummerstadt_era5_onshore_2023.nc")
 
 # CDS API Key in ~/.cdsapirc schreiben (nur wenn gesetzt)
 if CDS_KEY not in ("DEIN_API_KEY", ""):
@@ -153,7 +156,7 @@ N_MC          = 5
 snapshots = pd.date_range("2025-01-01", periods=HOURS, freq="h")
 
 print("=" * 55)
-print(" LUMMERLAND v3.0 – 4-Zonen-Inselmodell")
+print(" LUMMERLAND v4.3 – modularisiert (Lummerland + Lummerstadt)")
 print(f" PyPSA Version  : {pypsa.__version__}")
 print(f" Snapshots      : {HOURS} (1h, volles Jahr)")
 print(f" CO₂-Budget     : {CO2_BUDGET:,} tCO₂/a")
@@ -215,6 +218,16 @@ def _synthetic_profiles(
     w_off   = np.clip(seas_wo + 0.08 * rng.standard_normal(HOURS), 0.05, 1.0)
     return s_cf, w_cf, w_off
 
+
+def _shift_profile(arr: np.ndarray, shift: int = 0, scale: float = 1.0,
+                   noise: float = 0.03, seed: int = 123) -> np.ndarray:
+    """Verschiebt und skaliert ein Profil leicht, z.B. für Lummerstadt oder Monte-Carlo-Varianten."""
+    result = np.roll(arr, shift) * scale
+    if noise > 0:
+        rng = np.random.default_rng(seed)
+        result = result * (1 + noise * rng.standard_normal(len(arr)))
+    return np.clip(result, 0.0, 1.0)
+
 ERA5_AVAILABLE = False
 if ATLITE_AVAILABLE:
     try:
@@ -241,14 +254,31 @@ if ATLITE_AVAILABLE:
         offshore_cf = np.clip(cutout_off.wind(
             turbine="Vestas_V112_3MW", layout=cutout_off.uniform_layout(),
         ).values.flatten()[:HOURS], 0, 1)
+        # Lummerstadt (Greifswald-Küste, echte Koordinaten)
+        cutout_lstadt = atlite.Cutout(
+            path=_path_lummerstadt_onshore, module="era5",
+            x=slice(13.2, 14.0), y=slice(54.0, 54.6),  # Greifswald
+            time=slice("2023-01-01", "2023-12-31"),
+        )
+        cutout_lstadt.prepare(["wind", "influx", "temperature"])
+        solar_cf_lstadt = np.clip(cutout_lstadt.pv(
+            panel="CSi", orientation={"slope": 35., "azimuth": 180.},
+            layout=cutout_lstadt.uniform_layout(),
+        ).values.flatten()[:HOURS], 0, 1)
+        wind_cf_lstadt = np.clip(cutout_lstadt.wind(
+            turbine="Vestas_V112_3MW", layout=cutout_lstadt.uniform_layout(),
+        ).values.flatten()[:HOURS], 0, 1)
         ERA5_AVAILABLE = True
-        print("✓ ERA5-Daten geladen")
+        print("✓ ERA5-Daten fuer Lummerland + Lummerstadt (Greifswald) geladen")
     except Exception as _e:
         print(f"[atlite] Fehler: {_e} → Fallback")
 
 if not ERA5_AVAILABLE:
-    print("[Fallback] Erstelle synthetische Profile …")
+    print("[Fallback] Erstelle synthetische Profile fuer Lummerland + Lummerstadt …")
     solar_cf, wind_cf, offshore_cf = _synthetic_profiles()
+    # Lummerstadt: etwas windiger (+10%), etwas weniger Solar (-12%) als Lummerland
+    solar_cf_lstadt = _shift_profile(solar_cf, shift=1, scale=0.88, noise=0.04, seed=101)
+    wind_cf_lstadt  = _shift_profile(wind_cf,  shift=3, scale=1.10, noise=0.05, seed=202)
 
 doy_h = np.arange(HOURS) / 24.0
 hod_h = np.arange(HOURS) % 24
@@ -260,8 +290,12 @@ heat_total   = BASE_HEAT * (1 + 0.55 * np.cos(2*np.pi*(doy_h-355)/365)) * (1 + 0
 heat_zentrum = heat_total * 0.60
 heat_sued    = heat_total * 0.40
 
+# Lummerstadt (Greifswald): ~50 MW Grundlast, stärkere Winterheizung als Insel
+load_lstadt = BASE_LOAD * 0.60 * (1 + 0.22 * np.cos(2*np.pi*(doy_h-355)/365)) * (1 + 0.14 * np.sin(np.pi*(hod_h-6)/12))
+heat_lstadt = BASE_HEAT * 0.70 * (1 + 0.60 * np.cos(2*np.pi*(doy_h-355)/365)) * (1 + 0.07 * np.cos(2*np.pi*hod_h/24))
+
 print(f"\nProfile (ERA5={'✓' if ERA5_AVAILABLE else '⚠ synthetisch'}):")
-print(f"  Solar: Ø {solar_cf.mean():.3f}  Wind: Ø {wind_cf.mean():.3f}  Offshore: Ø {offshore_cf.mean():.3f}")
+print(f"  Solar (Lummerland): Ø {solar_cf.mean():.3f}  Wind: Ø {wind_cf.mean():.3f}  Offshore: Ø {offshore_cf.mean():.3f}")
 
 # =============================================================
 #  5) HILFSFUNKTIONEN
@@ -297,13 +331,17 @@ def build_network(
     s_cf: np.ndarray,
     w_cf: np.ndarray,
     w_off_cf: np.ndarray,
+    s_cf_lstadt: np.ndarray,
+    w_cf_lstadt: np.ndarray,
     l_nord: np.ndarray,
     l_zentrum: np.ndarray,
     l_sued: np.ndarray,
+    l_lstadt: np.ndarray,
     h_zentrum: np.ndarray,
     h_sued: np.ndarray,
+    h_lstadt: np.ndarray,
 ) -> "pypsa.Network":
-    """Baut und gibt das 4-Zonen PyPSA-Netz zurück."""
+    """Baut und gibt das 5-Zonen PyPSA-Netz zurueck (Lummerland + Lummerstadt)."""
     net = pypsa.Network()
     net.set_snapshots(snapshots)
     for c, co2 in [
@@ -311,16 +349,19 @@ def build_network(
         ("battery", 0.), ("H2", 0.), ("AC", 0.), ("heat", 0.),
     ]:
         net.add("Carrier", c, co2_emissions=co2)
-    for bname in ["Nord", "Zentrum", "Sued", "Offshore"]:
+    for bname in ["Nord", "Zentrum", "Sued", "Offshore", "Lummerstadt"]:
         net.add("Bus", bname, v_nom=110., carrier="AC")
     net.add("Bus", "Waerme_Zentrum", carrier="heat")
     net.add("Bus", "Waerme_Sued",    carrier="heat")
+    net.add("Bus", "Waerme_Lstadt",  carrier="heat")  # Fernwärme Lummerstadt
     net.add("Bus", "H2_Bus",         carrier="H2")
     for ln, b0, b1, ckey, snom, smin in [
         ("Leitung_NZ", "Nord",     "Zentrum", "Line",    60., 20.),
         ("Leitung_ZS", "Zentrum",  "Sued",    "Line",    60., 20.),
         ("Leitung_NS", "Nord",     "Sued",    "Line",    30.,  5.),
-        ("Leitung_ON", "Offshore", "Nord",    "Line_off",50., 10.),
+        ("Leitung_ON", "Offshore", "Nord",        "Line_off",50., 10.),
+        ("Leitung_NL", "Nord",     "Lummerstadt",  "Line_off",50., 10.),  # Seekabel Lummerland → Lummerstadt
+        ("Leitung_OL", "Offshore", "Lummerstadt",  "Line_off",40.,  8.),  # Seekabel Offshore → Lummerstadt
     ]:
         net.add("Line", ln, bus0=b0, bus1=b1, x=0.10, r=0.01,
                 s_nom=snom, s_nom_min=smin, s_nom_extendable=True,
@@ -351,6 +392,18 @@ def build_network(
             p_nom=60., p_nom_min=20., p_nom_extendable=True,
             p_max_pu=pd.Series(s_cf, index=snapshots),
             marginal_cost=OPEX["Solar"], capital_cost=capex_annual("Solar"))
+    # ── Lummerstadt (Greifswald-Küste) ──────────────────────────────────────────
+    net.add("Generator", "Wind_Lstadt", bus="Lummerstadt", carrier="wind",
+            p_nom=40., p_nom_min=10., p_nom_extendable=True,
+            p_max_pu=pd.Series(w_cf_lstadt, index=snapshots),
+            marginal_cost=OPEX["Wind_on"], capital_cost=capex_annual("Wind_on"))
+    net.add("Generator", "Solar_Lstadt", bus="Lummerstadt", carrier="solar",
+            p_nom=20., p_nom_min=4., p_nom_extendable=True,
+            p_max_pu=pd.Series(s_cf_lstadt, index=snapshots),
+            marginal_cost=OPEX["Solar"], capital_cost=capex_annual("Solar"))
+    net.add("Generator", "Gas_Lstadt", bus="Lummerstadt", carrier="gas",
+            p_nom=25., p_nom_min=5., p_nom_extendable=True,
+            marginal_cost=OPEX["Gas_CCGT"], capital_cost=capex_annual("Gas_CCGT"))
     net.add("StorageUnit", "Batterie", bus="Zentrum", carrier="battery",
             p_nom=25., p_nom_min=5., p_nom_extendable=True, max_hours=4.,
             efficiency_store=0.93, efficiency_dispatch=0.93, cyclic_state_of_charge=True,
@@ -381,6 +434,15 @@ def build_network(
     net.add("Load", "Last_Sued",    bus="Sued",           p_set=pd.Series(l_sued,    index=snapshots))
     net.add("Load", "Waerme_Last_Zentrum", bus="Waerme_Zentrum", p_set=pd.Series(h_zentrum, index=snapshots))
     net.add("Load", "Waerme_Last_Sued",    bus="Waerme_Sued",    p_set=pd.Series(h_sued,    index=snapshots))
+    # ── Lummerstadt Wärme + Lasten ───────────────────────────────────────────────
+    net.add("Link", "WP_Lstadt", bus0="Lummerstadt", bus1="Waerme_Lstadt",
+            p_nom=14., p_nom_min=3., p_nom_extendable=True, efficiency=3.1,
+            marginal_cost=OPEX["HeatPump"], capital_cost=capex_annual("HeatPump"))
+    net.add("Store", "WaermeSpeicher_Lstadt", bus="Waerme_Lstadt", carrier="heat",
+            e_nom=120., e_nom_min=12., e_nom_extendable=True, e_cyclic=True,
+            standing_loss=0.004, capital_cost=capex_annual("HeatStore") * 8)
+    net.add("Load", "Last_Lstadt",        bus="Lummerstadt",   p_set=pd.Series(l_lstadt,  index=snapshots))
+    net.add("Load", "Waerme_Last_Lstadt", bus="Waerme_Lstadt", p_set=pd.Series(h_lstadt,  index=snapshots))
     net.add("GlobalConstraint", "co2_limit",
             sense="<=", carrier_attribute="co2_emissions", constant=CO2_BUDGET)
 
@@ -395,19 +457,21 @@ def build_network(
 
     return net
 
-print("\n✓ build_network() definiert")
+print("\n✓ build_network() definiert  (5 Zonen: Nord, Zentrum, Sued, Offshore, Lummerstadt)")
 
 # =============================================================
-#  7) BASISOPTIMIERUNG
+#  7) BASISOPTIMIERUNG  (Lummerland + Lummerstadt)
 # =============================================================
 print("\n" + "=" * 55)
-print(" Starte Basisoptimierung …")
+print(" Starte Basisoptimierung  (Lummerland + Lummerstadt) …")
 print("=" * 55)
 
 n = build_network(
     solar_cf, wind_cf, offshore_cf,
+    solar_cf_lstadt, wind_cf_lstadt,
     load_nord, load_zentrum, load_sued,
-    heat_zentrum, heat_sued,
+    load_lstadt,
+    heat_zentrum, heat_sued, heat_lstadt,
 )
 
 GUROBI_USED = False
@@ -463,10 +527,10 @@ for name in n.generators.index:
     print(f"  {name:<25} {_pnom(n.generators, name):>8.1f} MW")
 
 # =============================================================
-#  8) MONTE-CARLO
+#  8) MONTE-CARLO  (5-Zonen, inkl. Lummerstadt)
 # =============================================================
 print("\n" + "=" * 55)
-print(f" Monte-Carlo: {N_MC} Wetterjahre")
+print(f" Monte-Carlo: {N_MC} Wetterjahre  |  5 Zonen")
 print("=" * 55)
 
 mc_results = []
@@ -476,7 +540,11 @@ for mc_i in range(N_MC):
     lt = load_total * (1. + np.random.uniform(-0.05, 0.05))
     ht = heat_total * (1. + np.random.uniform(-0.05, 0.05))
     try:
-        nm = build_network(s_mc, w_mc, w_off_mc, lt*0.40, lt*0.25, lt*0.35, ht*0.60, ht*0.40)
+        s_ls_mc = _shift_profile(s_mc, shift=1, scale=0.88, noise=0.04, seed=mc_i + 101)
+        w_ls_mc = _shift_profile(w_mc, shift=3, scale=1.10, noise=0.05, seed=mc_i + 202)
+        lt_ls = lt * 0.60 * (1 + np.random.uniform(-0.05, 0.05))
+        ht_ls = ht * 0.70 * (1 + np.random.uniform(-0.05, 0.05))
+        nm = build_network(s_mc, w_mc, w_off_mc, s_ls_mc, w_ls_mc, lt*0.40, lt*0.25, lt*0.35, lt_ls, ht*0.60, ht*0.40, ht_ls)
 
         # FIX 3: Gurobi bevorzugen, HiGHS mit 600s + verbesserter Skalierung
         _mc_solved = False
@@ -614,9 +682,9 @@ if not valid.empty:
     ax.legend(fontsize=8, facecolor=BG, labelcolor="white")
 _style_ax(ax, "Monte-Carlo Kosten", xlabel="Wetterjahr", ylabel="M€/a")
 
-fig_a.suptitle("LUMMERLAND v3.0 – Erzeugungsmix, H₂-System & Sektorkopplung",
+fig_a.suptitle("LUMMERLAND v4.3 – Erzeugungsmix, H₂-System & Sektorkopplung",
                fontsize=14, fontweight="bold", color="white", y=0.97)
-_path_a = os.path.join(OUTPUT_DIR, "lummerland_v3_ergebnisse.png")
+_path_a = os.path.join(OUTPUT_DIR, "lummerland_v4_3_ergebnisse.png")
 plt.savefig(_path_a, dpi=140, bbox_inches="tight", facecolor=BG)
 plt.close()
 print(f"  ✓ {_path_a}")
@@ -693,9 +761,9 @@ if not valid.empty:
     cb.ax.yaxis.label.set_color("white")
 _style_ax(ax, "MC: Kosten vs. RE-Anteil", xlabel="Kosten [M€/a]", ylabel="RE-Anteil [%]")
 
-fig_b.suptitle("LUMMERLAND v3.0 – Kosten, CO₂ & Monte-Carlo Robustheit",
+fig_b.suptitle("LUMMERLAND v4.3 – Kosten, CO₂ & Monte-Carlo Robustheit",
                fontsize=14, fontweight="bold", color="white", y=0.97)
-_path_b = os.path.join(OUTPUT_DIR, "lummerland_v3_kosten.png")
+_path_b = os.path.join(OUTPUT_DIR, "lummerland_v4_3_kosten.png")
 plt.savefig(_path_b, dpi=140, bbox_inches="tight", facecolor=BG)
 plt.close()
 print(f"  ✓ {_path_b}")
@@ -710,10 +778,10 @@ t_ax  = range(len(n.generators_t.p.iloc[idx_summer]))
 ax = fig_c.add_subplot(gs_c[0, 0])
 sectors = {
     "Strom-\nErzeugung": n.generators_t.p.sum().sum() / 1e3,
-    "Strom-\nLast":      n.loads_t.p_set[["Last_Nord","Last_Zentrum","Last_Sued"]].sum().sum() / 1e3,
+    "Strom-\nLast":      n.loads_t.p_set[["Last_Nord","Last_Zentrum","Last_Sued","Last_Lstadt"]].sum().sum() / 1e3,
 }
 try:
-    sectors["Wärme-\nLast"]  = n.loads_t.p_set[["Waerme_Last_Zentrum","Waerme_Last_Sued"]].sum().sum() / 1e3
+    sectors["Wärme-\nLast"]  = n.loads_t.p_set[["Waerme_Last_Zentrum","Waerme_Last_Sued","Waerme_Last_Lstadt"]].sum().sum() / 1e3
     sectors["H₂-\nErzeugt"] = (n.links_t.p0.get("Elektrolyseur", pd.Series(0))).sum() / 1e3
 except (KeyError, AttributeError):
     pass
@@ -755,7 +823,7 @@ ax.legend(fontsize=7, facecolor=BG, labelcolor="white", ncol=2, loc="upper right
 ax = fig_c.add_subplot(gs_c[1, 0])
 re_gens  = [g for g in n.generators.index if n.generators.at[g, "carrier"] in ["wind","solar"]]
 re_total = n.generators_t.p[re_gens].sum(axis=1)
-demand   = n.loads_t.p_set[["Last_Nord","Last_Zentrum","Last_Sued"]].sum(axis=1)
+demand   = n.loads_t.p_set[["Last_Nord","Last_Zentrum","Last_Sued","Last_Lstadt"]].sum(axis=1)
 residual = (demand - re_total).sort_values(ascending=False)
 ax.fill_between(range(len(residual)), residual.values, 0,
                 where=residual.values > 0, color="#D0021B", alpha=0.6, label="Residual >0")
@@ -766,7 +834,7 @@ _style_ax(ax, "Dauerlinie Residuallast", xlabel="Stunden (sortiert)", ylabel="MW
 ax.legend(fontsize=8, facecolor=BG, labelcolor="white")
 
 ax = fig_c.add_subplot(gs_c[1, 1])
-line_cm = {"Leitung_NZ":"#4A90D9","Leitung_ZS":"#F5A623","Leitung_NS":"#2ECC71","Leitung_ON":"#00BCD4"}
+line_cm = {"Leitung_NZ":"#4A90D9","Leitung_ZS":"#F5A623","Leitung_NS":"#2ECC71","Leitung_ON":"#00BCD4","Leitung_NL":"#E040FB","Leitung_OL":"#CE93D8"}
 for ln, lclr in line_cm.items():
     try:
         sopt = n.lines.at[ln, "s_nom_opt"] if "s_nom_opt" in n.lines.columns else n.lines.at[ln, "s_nom"]
@@ -791,9 +859,9 @@ if not valid.empty:
     )
 _style_ax(ax, "Monte-Carlo Streuung")
 
-fig_c.suptitle("LUMMERLAND v3.0 – Sektorkopplung, Speicher & Versorgungssicherheit",
+fig_c.suptitle("LUMMERLAND v4.3 – Sektorkopplung, Speicher & Versorgungssicherheit  |  inkl. Lummerstadt",
                fontsize=14, fontweight="bold", color="white", y=0.97)
-_path_c = os.path.join(OUTPUT_DIR, "lummerland_v3_sektoren.png")
+_path_c = os.path.join(OUTPUT_DIR, "lummerland_v4_3_sektoren.png")
 plt.savefig(_path_c, dpi=140, bbox_inches="tight", facecolor=BG)
 plt.close()
 print(f"  ✓ {_path_c}")
@@ -840,7 +908,7 @@ try:
     OC    = n.objective / 1e6
     CV    = co2_total
     CAP_M = {g: _safe_pnom(n.generators, g)
-             for g in ["Wind_Nord","Wind_Offshore","Wind_Zentrum","Solar_Nord","Solar_Sued","Atomkraft","Gas_CCGT"]}
+             for g in ["Wind_Nord","Wind_Offshore","Wind_Zentrum","Solar_Nord","Solar_Sued","Atomkraft","Gas_CCGT","Wind_Lstadt","Solar_Lstadt","Gas_Lstadt"]}
     BAT_CAP = _safe_pnom(n.storage_units, "Batterie")
     H2T  = _safe_enom(n.stores, "H2_Tank")
     H2E  = _safe_pnom(n.links, "Elektrolyseur")
@@ -855,28 +923,30 @@ try:
         "Sued":     CAP_M["Solar_Sued"],
         "Offshore": CAP_M["Wind_Offshore"],
     }
-    BLOAD   = {b: _bus_load(b) for b in ["Nord","Zentrum","Sued","Offshore"]}
-    LF2     = {k: _line_flow(k) for k in ["Leitung_NZ","Leitung_ZS","Leitung_NS","Leitung_ON"]}
-    LPCT2   = {k: _line_lpct(k) for k in ["Leitung_NZ","Leitung_ZS","Leitung_NS","Leitung_ON"]}
+    BLOAD   = {b: _bus_load(b) for b in ["Nord","Zentrum","Sued","Offshore","Lummerstadt"]}
+    LF2     = {k: _line_flow(k) for k in ["Leitung_NZ","Leitung_ZS","Leitung_NS","Leitung_ON","Leitung_NL","Leitung_OL"]}
+    LPCT2   = {k: _line_lpct(k) for k in ["Leitung_NZ","Leitung_ZS","Leitung_NS","Leitung_ON","Leitung_NL","Leitung_OL"]}
     DATA_OK = True
 except Exception as de:
     OC = 42.5; CV = 1250.; REP = 78.
     CAP_M   = {"Wind_Nord":65.,"Wind_Offshore":110.,"Wind_Zentrum":30.,"Solar_Nord":22.,"Solar_Sued":75.,"Atomkraft":30.,"Gas_CCGT":20.}
     BAT_CAP = 30.; H2T = 520.; H2E = 18.; H2F = 12.; WPZ = 22.; WPS = 16.
-    BCAP    = {"Nord":117.,"Zentrum":80.,"Sued":75.,"Offshore":110.}
-    BLOAD   = {"Nord":32.,"Zentrum":20.,"Sued":28.,"Offshore":0.}
-    LF2     = {"Leitung_NZ":28.,"Leitung_ZS":22.,"Leitung_NS":12.,"Leitung_ON":55.}
-    LPCT2   = {"Leitung_NZ":47.,"Leitung_ZS":37.,"Leitung_NS":40.,"Leitung_ON":73.}
+    BCAP    = {"Nord":117.,"Zentrum":80.,"Sued":75.,"Offshore":110.,"Lummerstadt":85.}
+    BLOAD   = {"Nord":32.,"Zentrum":20.,"Sued":28.,"Offshore":0.,"Lummerstadt":24.}
+    LF2     = {"Leitung_NZ":28.,"Leitung_ZS":22.,"Leitung_NS":12.,"Leitung_ON":55.,"Leitung_NL":38.,"Leitung_OL":29.}
+    LPCT2   = {"Leitung_NZ":47.,"Leitung_ZS":37.,"Leitung_NS":40.,"Leitung_ON":73.,"Leitung_NL":63.,"Leitung_OL":48.}
     DATA_OK = False
 
 BGMAP = "#0a1628"; LAND = "#2d5a1a"; SHORE = "#c8a96e"
-BCOL  = {"Nord":"#4A90D9","Zentrum":"#7ED321","Sued":"#F5A623","Offshore":"#00BCD4"}
-BUS_POS   = {"Nord":(14.8,13.2),"Zentrum":(11.8,9.8),"Sued":(18.8,8.2),"Offshore":(3.5,17.2)}
+BCOL  = {"Nord":"#4A90D9","Zentrum":"#7ED321","Sued":"#F5A623","Offshore":"#00BCD4","Lummerstadt":"#E040FB"}
+BUS_POS   = {"Nord":(14.8,13.2),"Zentrum":(11.8,9.8),"Sued":(18.8,8.2),"Offshore":(3.5,17.2),"Lummerstadt":(20.5,17.8)}
 LINES_DEF = [
-    ("Leitung_NZ", "Nord",     "Zentrum", False),
-    ("Leitung_ZS", "Zentrum",  "Sued",    False),
-    ("Leitung_NS", "Nord",     "Sued",    False),
-    ("Leitung_ON", "Offshore", "Nord",    True),
+    ("Leitung_NZ",  "Nord",        "Zentrum",     False),
+    ("Leitung_ZS",  "Zentrum",     "Sued",        False),
+    ("Leitung_NS",  "Nord",        "Sued",        False),
+    ("Leitung_ON",  "Offshore",    "Nord",        True),
+    ("Leitung_NL",  "Nord",        "Lummerstadt", True),   # Seekabel
+    ("Leitung_OL",  "Offshore",    "Lummerstadt", True),   # Seekabel
 ]
 
 def draw_turbine(ax: "plt.Axes", x: float, y: float, size: float = 0.5,
@@ -906,16 +976,25 @@ def label_box(ax: "plt.Axes", x: float, y: float, txt: str, color: str,
     ax.text(x, y, txt, fontsize=fontsize, color=color, ha="center", va="center", zorder=zorder,
             bbox=dict(facecolor=BGMAP, edgecolor=color, lw=0.8, boxstyle="round,pad=0.3", alpha=0.93))
 
-fig_map, ax_map = plt.subplots(figsize=(16, 14))
+fig_map, ax_map = plt.subplots(figsize=(18, 14))
 fig_map.patch.set_facecolor(BGMAP)
 ax_map.set_facecolor(BGMAP)
-ax_map.set_xlim(0, 24); ax_map.set_ylim(4, 22)
+ax_map.set_xlim(0, 26); ax_map.set_ylim(4, 22)
 ax_map.set_aspect("equal"); ax_map.axis("off")
+# Lummerland (Insel im Meer)
 island = plt.Polygon(
     [(8,5),(22,5),(22,16),(18,17),(14,16),(10,15),(8,12)],
     facecolor=LAND, edgecolor=SHORE, lw=2, alpha=0.85, zorder=1,
 )
 ax_map.add_patch(island)
+# Lummerstadt (Festland – Küste Mecklenburg-Vorpommern / Greifswald)
+festland = plt.Polygon(
+    [(22.5,4),(26,4),(26,22),(22.5,22)],
+    facecolor="#3a5c1a", edgecolor=SHORE, lw=1.5, alpha=0.55, zorder=1,
+)
+ax_map.add_patch(festland)
+ax_map.plot([22.5,22.5],[4,22], color=SHORE, lw=2.5, alpha=0.85, zorder=2,
+            label="Küstenlinie Lummerstadt")
 for ln, b0, b1, offshore in LINES_DEF:
     x0, y0 = BUS_POS[b0]; x1, y1 = BUS_POS[b1]
     pct = LPCT2.get(ln, 0); clr = lc_color(pct)
@@ -937,6 +1016,11 @@ draw_turbine(ax_map,  2.5, 17.5, size=0.7, color="#00BCD4")
 draw_turbine(ax_map,  4.2, 18.0, size=0.7, color="#00BCD4")
 draw_solar(ax_map, 19.5, 10.0, size=0.55, color="#F5A623")
 draw_solar(ax_map, 19.5,  9.0, size=0.55, color="#F5A623")
+# Lummerstadt: Windturbinen (lila) und Solar
+draw_turbine(ax_map, 23.2, 18.5, size=0.55, color="#E040FB")
+draw_turbine(ax_map, 24.0, 18.5, size=0.55, color="#E040FB")
+draw_turbine(ax_map, 24.8, 18.0, size=0.55, color="#E040FB")
+draw_solar(ax_map,   23.5, 16.5, size=0.45, color="#CE93D8")
 kpi = (f"Gesamtkosten: {OC:.2f} M€/a\nCO₂: {CV:.0f} t/a\nRE-Anteil: {REP:.1f}%\n"
        f"H₂-Tank: {H2T:.0f} MWh\nElektrolyseur: {H2E:.0f} MW\nBrennstoffzelle: {H2F:.0f} MW\n"
        f"WP Zentrum: {WPZ:.0f} MW | WP Süd: {WPS:.0f} MW")
@@ -952,11 +1036,11 @@ ax_map.legend(
     loc="lower right", facecolor="#1a2a3a", labelcolor="white", fontsize=9, framealpha=0.9,
 )
 ax_map.set_title(
-    f"LUMMERLAND v3.0 – 4-Zonen-Netzknoten-Karte  |  {'✓ Echte Daten' if DATA_OK else '⚠ Demo'}",
+    f"LUMMERLAND v4.3 – Lummerland + Lummerstadt (Greifswald)  |  {'✓ Echte Daten' if DATA_OK else '⚠ Demo-Fallback'}",
     fontsize=14, fontweight="bold", color="white", pad=15,
 )
 fig_map.tight_layout()
-_path_map = os.path.join(OUTPUT_DIR, "lummerland_v3_karte.png")
+_path_map = os.path.join(OUTPUT_DIR, "lummerland_v4_2_karte.png")
 plt.savefig(_path_map, dpi=150, bbox_inches="tight", facecolor=BGMAP)
 plt.close()
 print(f"  ✓ {_path_map}")
@@ -965,14 +1049,14 @@ print(f"  ✓ {_path_map}")
 #  13) PDF-BERICHT
 # =============================================================
 print("\n  Erstelle PDF-Bericht …")
-pdf_path = os.path.join(OUTPUT_DIR, "Lummerland_v3_Bericht.pdf")
+pdf_path = os.path.join(OUTPUT_DIR, "Lummerland_v4_3_Bericht.pdf")
 
 with PdfPages(pdf_path) as pdf:
     fc = plt.figure(figsize=(16, 10)); fc.patch.set_facecolor(BG)
     ac = fc.add_axes([0, 0, 1, 1]); ac.set_facecolor(BG); ac.axis("off")
     ac.text(0.5, 0.72, "🏝️ LUMMERLAND", ha="center", fontsize=42, fontweight="bold", color="#4A90D9", transform=ac.transAxes)
-    ac.text(0.5, 0.60, "Island Energy Model v3.0", ha="center", fontsize=24, color="white", transform=ac.transAxes)
-    ac.text(0.5, 0.50, "4-Zonen-Inselmodell mit Sektorkopplung,\nH₂-System & Monte-Carlo-Robustheitsprüfung",
+    ac.text(0.5, 0.60, "Island Energy Model v4.3 – Lummerland + Lummerstadt", ha="center", fontsize=24, color="white", transform=ac.transAxes)
+    ac.text(0.5, 0.50, "5-Zonen-Modell: Lummerland + Lummerstadt (Greifswald)\nSektorkopplung, H₂-System & Monte-Carlo-Robustheitsprüfung",
             ha="center", fontsize=14, color="#aaaaaa", transform=ac.transAxes)
     ac.text(0.5, 0.38, f"Gesamtkosten: {n.objective/1e6:.3f} M€/a   |   CO₂: {co2_total:.0f} tCO₂/a   |   Zeitschritte: {len(n.snapshots)}",
             ha="center", fontsize=12, color="#4A90D9", transform=ac.transAxes)
@@ -1019,7 +1103,7 @@ with PdfPages(pdf_path) as pdf:
         am.text(0.5, 0.5, f"MC-Tabelle n.v.: {ex}", ha="center", va="center",
                 color="white", fontsize=12, transform=am.transAxes)
     d = pdf.infodict()
-    d["Title"]        = "Lummerland Island Energy Model v3.0"
+    d["Title"]        = "Lummerland Island Energy Model v4.3"
     d["Author"]       = "PyPSA Optimierung"
     d["CreationDate"] = datetime.datetime.now()
     pdf.savefig(fm, facecolor=BG); plt.close(fm)

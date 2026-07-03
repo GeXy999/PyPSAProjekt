@@ -1,0 +1,263 @@
+#!/usr/bin/env python3
+# =============================================================
+#  🇩🇪  DEUTSCHLAND ENERGY MODEL – GRAFISCHES OVERLAY (Streamlit)
+#  Importiert deutschland_v1.py und macht das Modell interaktiv.
+#
+#  Installation:  pip install streamlit plotly
+#  Starten:       streamlit run deutschland_gui.py
+#  (deutschland_v1.py muss im selben Ordner liegen)
+# =============================================================
+import os
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+
+import deutschland_v1 as dm   # ← das komplette Modell als Modul
+
+st.set_page_config(page_title="Deutschland Energy Model", layout="wide",
+                   page_icon="⚡")
+st.title("⚡ Deutschland Energy Model v1.0 – Interaktives Dashboard")
+st.caption("5 Zonen · Sektorkopplung (Wärme + H₂) · CO₂-Budget · "
+           "Kapazitätsausbau · Monte-Carlo")
+
+# ----------------------------------------------------------------------
+# Sidebar: Szenario-Parameter
+# ----------------------------------------------------------------------
+sb = st.sidebar
+sb.header("🎛️ Szenario")
+co2_budget_mt = sb.slider("CO₂-Budget (Mt/a)", 0, 250, 120, step=10)
+co2_price     = sb.slider("CO₂-Preis (€/t)", 0, 400, 80, step=10)
+load_scale    = sb.slider("Stromlast-Skalierung", 0.7, 1.5, 1.0, step=0.05)
+heat_scale    = sb.slider("Wärmelast-Skalierung (Elektrifizierung)",
+                          0.3, 1.5, 1.0, step=0.05)
+sb.divider()
+n_mc   = sb.slider("Monte-Carlo Wetterjahre", 0, 10, 0,
+                   help="0 = überspringen (schneller)")
+run_btn = sb.button("🚀 Modell optimieren", type="primary",
+                    use_container_width=True)
+sb.caption(f"Solver: {'Gurobi' if dm.USE_GUROBI else 'HiGHS'} · "
+           f"Auflösung: {dm.TIME_RES}h · "
+           f"Wetter: {'ERA5 möglich' if dm.ATLITE_AVAILABLE else 'synthetisch'}")
+
+# ----------------------------------------------------------------------
+# Modelllauf (gecacht: gleiche Parameter → kein Neurechnen)
+# ----------------------------------------------------------------------
+@st.cache_resource(show_spinner="⏳ Optimiere Deutschland-Modell … "
+                                "(je nach Rechner 1–10 min)")
+def solve(co2_budget, co2_price, load_scale, heat_scale):
+    net, era5_ok = dm.run_base(co2_budget=co2_budget, co2_price=co2_price,
+                               load_scale=load_scale, heat_scale=heat_scale,
+                               verbose=False)
+    return net, era5_ok
+
+@st.cache_data(show_spinner="⏳ Monte-Carlo läuft …")
+def monte_carlo(n_mc, co2_budget, co2_price):
+    return dm.run_monte_carlo(n_mc=n_mc, co2_budget=co2_budget,
+                              co2_price=co2_price)
+
+if "ran" not in st.session_state:
+    st.session_state.ran = False
+if run_btn:
+    st.session_state.ran = True
+if not st.session_state.ran:
+    st.info("👈 Parameter einstellen und **Modell optimieren** drücken.")
+    st.stop()
+
+n, era5_ok = solve(co2_budget_mt * 1e6, float(co2_price),
+                   float(load_scale), float(heat_scale))
+
+# ----------------------------------------------------------------------
+# KPI-Zeile
+# ----------------------------------------------------------------------
+co2 = dm.total_co2(n) / 1e6
+ee  = dm.re_share(n)
+preis = n.buses_t.marginal_price[list(dm.REGIONS)].mean().mean()
+erz_twh = n.generators_t.p.sum().sum() * dm.TIME_RES / 1e6
+
+k1, k2, k3, k4, k5 = st.columns(5)
+k1.metric("Gesamtkosten", f"{n.objective/1e9:,.2f} Mrd €/a")
+k2.metric("Ø Strompreis", f"{preis:,.1f} €/MWh")
+k3.metric("CO₂-Emissionen", f"{co2:,.1f} Mt/a",
+          delta=f"{co2 - co2_budget_mt:+.1f} vs. Budget", delta_color="inverse")
+k4.metric("EE-Anteil", f"{ee:,.1f} %")
+k5.metric("Erzeugung", f"{erz_twh:,.0f} TWh/a")
+if not era5_ok:
+    st.caption("⚠ Synthetische Wetterdaten (atlite/ERA5 nicht verfügbar)")
+
+FARBEN = dm.CARRIER_COLORS
+
+tab_disp, tab_kap, tab_preis, tab_spei, tab_karte, tab_mc, tab_pdf = st.tabs(
+    ["📊 Dispatch", "🏗️ Kapazitäten", "💶 Preise", "🔋 Speicher & H₂",
+     "🗺️ Karte", "🎲 Monte-Carlo", "📄 Bericht"])
+
+# ── Dispatch ──────────────────────────────────────────────────────────
+with tab_disp:
+    woche = st.select_slider("Woche im Jahr", options=list(range(1, 53)), value=2)
+    steps = 7 * 24 // dm.TIME_RES
+    sl = slice((woche - 1) * steps, woche * steps)
+    gen = n.generators_t.p.T.groupby(n.generators.carrier).sum().T.iloc[sl] / 1000.
+    fig = px.area(gen, color_discrete_map=FARBEN,
+                  labels={"value": "Leistung (GW)", "snapshot": ""})
+    last = n.loads_t.p_set[[f"Last_{r}" for r in dm.REGIONS]].sum(axis=1).iloc[sl] / 1000.
+    fig.add_scatter(x=last.index, y=last, name="Stromlast",
+                    line=dict(color="white", dash="dot"))
+    st.plotly_chart(fig, use_container_width=True)
+
+# ── Kapazitäten ───────────────────────────────────────────────────────
+with tab_kap:
+    c1, c2 = st.columns(2)
+    caps = pd.DataFrame({
+        "Anlage": n.generators.index,
+        "Träger": n.generators.carrier.values,
+        "Start (GW)": n.generators.p_nom.values / 1000.,
+        "Optimiert (GW)": [dm._pnom(n.generators, g) / 1000.
+                           for g in n.generators.index]})
+    caps["Zubau (GW)"] = (caps["Optimiert (GW)"] - caps["Start (GW)"]).round(2)
+    with c1:
+        fig = px.bar(caps, x="Optimiert (GW)", y="Anlage", color="Träger",
+                     orientation="h", color_discrete_map=FARBEN)
+        st.plotly_chart(fig, use_container_width=True)
+    with c2:
+        en = (n.generators_t.p.T.groupby(n.generators.carrier).sum().T.sum()
+              * dm.TIME_RES / 1e6)
+        st.plotly_chart(px.pie(values=en.values, names=en.index,
+                               color=en.index, color_discrete_map=FARBEN,
+                               title="Jahreserzeugung (TWh)"),
+                        use_container_width=True)
+        st.dataframe(caps.round(2), use_container_width=True, hide_index=True)
+    st.subheader("Netz- & Sektorkopplungs-Ausbau")
+    netz = pd.DataFrame({
+        "Leitung": n.lines.index,
+        "Start (GW)": n.lines.s_nom.values / 1000.,
+        "Optimiert (GW)": n.lines.s_nom_opt.values / 1000.})
+    netz["Zubau (GW)"] = (netz["Optimiert (GW)"] - netz["Start (GW)"]).round(2)
+    l1, l2 = st.columns(2)
+    l1.dataframe(netz.round(2), use_container_width=True, hide_index=True)
+    sekt = pd.DataFrame({
+        "Komponente": ["Elektrolyseur", "Brennstoffzelle", "H₂-Tank"]
+                      + [f"Wärmepumpe {r}" for r in dm.REGIONS],
+        "Optimiert": [f"{dm._pnom(n.links,'Elektrolyseur')/1000:.1f} GW",
+                      f"{dm._pnom(n.links,'Brennstoffzelle')/1000:.1f} GW",
+                      f"{n.stores.e_nom_opt['H2_Tank']/1000:.0f} GWh"]
+                     + [f"{dm._pnom(n.links, f'WP_{r}')/1000:.1f} GW"
+                        for r in dm.REGIONS]})
+    l2.dataframe(sekt, use_container_width=True, hide_index=True)
+
+# ── Preise ────────────────────────────────────────────────────────────
+with tab_preis:
+    preise = n.buses_t.marginal_price[list(dm.REGIONS)]
+    st.plotly_chart(px.line(preise, labels={"value": "€/MWh", "snapshot": ""}),
+                    use_container_width=True)
+    c1, c2 = st.columns(2)
+    c1.plotly_chart(px.box(preise, labels={"value": "€/MWh"},
+                           title="Preisverteilung je Region"),
+                    use_container_width=True)
+    monat = preise.resample("ME").mean()
+    monat.index = monat.index.strftime("%b")
+    c2.plotly_chart(px.imshow(monat.T, aspect="auto",
+                              labels=dict(color="€/MWh"),
+                              title="Ø Monatspreise je Region"),
+                    use_container_width=True)
+
+# ── Speicher & H₂ ─────────────────────────────────────────────────────
+with tab_spei:
+    c1, c2 = st.columns(2)
+    soc = n.storage_units_t.state_of_charge / 1000.
+    c1.plotly_chart(px.line(soc, title="Batterien & Pumpspeicher (GWh)"),
+                    use_container_width=True)
+    h2 = n.stores_t.e["H2_Tank"] / 1000.
+    figh = px.area(h2, title="H₂-Tank Füllstand (GWh)")
+    figh.update_traces(line_color="#B57EDC")
+    c2.plotly_chart(figh, use_container_width=True)
+    waerme = n.stores_t.e[[f"WaermeSpeicher_{r}" for r in dm.REGIONS]] / 1000.
+    st.plotly_chart(px.line(waerme, title="Wärmespeicher (GWh)"),
+                    use_container_width=True)
+
+# ── Karte ─────────────────────────────────────────────────────────────
+with tab_karte:
+    fig = go.Figure()
+    for ln, row in n.lines.iterrows():
+        cap = float(row.s_nom_opt) or 1.
+        pct = 100. * abs(n.lines_t.p0[ln]).mean() / cap
+        clr = "#6bcb77" if pct < 50 else ("#ffd93d" if pct < 80 else "#ff6b6b")
+        fig.add_trace(go.Scattergeo(
+            lon=[n.buses.at[row.bus0, "x"], n.buses.at[row.bus1, "x"]],
+            lat=[n.buses.at[row.bus0, "y"], n.buses.at[row.bus1, "y"]],
+            mode="lines",
+            line=dict(width=max(2, cap / 3000), color=clr,
+                      dash="dash" if "Off" in ln else "solid"),
+            name=f"{ln}: {cap/1000:.1f} GW | {pct:.0f}%"))
+    busse = list(dm.REGIONS) + ["Offshore"]
+    texte = []
+    for b in busse:
+        cap = sum(dm._pnom(n.generators, g) for g in n.generators.index
+                  if n.generators.bus[g] == b) / 1000.
+        texte.append(f"<b>{b}</b><br>{cap:.0f} GW installiert")
+    fig.add_trace(go.Scattergeo(
+        lon=[n.buses.at[b, "x"] for b in busse],
+        lat=[n.buses.at[b, "y"] for b in busse],
+        text=busse, hovertext=texte, hoverinfo="text",
+        mode="markers+text", textposition="top center",
+        marker=dict(size=16, color=["#00BCD4", "#E040FB", "#FF9800",
+                                    "#8BC34A", "#4A90D9"]),
+        name="Regionen"))
+    fig.update_geos(fitbounds="locations", resolution=50, showcountries=True,
+                    showland=True, landcolor="#22331a", bgcolor="#0a2540",
+                    countrycolor="#555")
+    fig.update_layout(height=650, margin=dict(l=0, r=0, t=10, b=0),
+                      paper_bgcolor="#0a2540", legend_font_color="white")
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption("Grün <50 % · Gelb 50–80 % · Rot >80 % mittlere Auslastung · "
+               "gestrichelt = Offshore-Anbindung")
+
+# ── Monte-Carlo ───────────────────────────────────────────────────────
+with tab_mc:
+    if n_mc == 0:
+        st.info("Monte-Carlo in der Sidebar aktivieren (Wetterjahre > 0) "
+                "und erneut optimieren.")
+    else:
+        mc_df = monte_carlo(n_mc, co2_budget_mt * 1e6, float(co2_price))
+        st.dataframe(mc_df.round(2), use_container_width=True, hide_index=True)
+        valid = mc_df.dropna()
+        if not valid.empty:
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Ø Kosten", f"{valid.Kosten_MrdEa.mean():.2f} Mrd €/a",
+                      f"±{valid.Kosten_MrdEa.std():.2f}")
+            c2.metric("Ø CO₂", f"{valid.CO2_Mt.mean():.1f} Mt/a")
+            c3.metric("Ø EE-Anteil", f"{valid.RE_Anteil_pct.mean():.1f} %")
+            st.plotly_chart(px.bar(valid, x="Jahr", y="Kosten_MrdEa",
+                                   title="Kosten je Wetterjahr (Mrd €/a)"),
+                            use_container_width=True)
+
+# ── PDF-Bericht ───────────────────────────────────────────────────────
+with tab_pdf:
+    st.write("Erzeugt Karte, Plots und PDF-Bericht wie im Original-Skript "
+             "(inkl. Monte-Carlo-Tabelle, falls oben gerechnet).")
+    if st.button("📄 Bericht erzeugen"):
+        with st.spinner("Erstelle Plots & PDF …"):
+            od = dm.OUTPUT_DIR
+            pa = os.path.join(od, "deutschland_v1_dispatch.png")
+            pb = os.path.join(od, "deutschland_v1_kapazitaeten.png")
+            pc = os.path.join(od, "deutschland_v1_speicher_preise.png")
+            pm = os.path.join(od, "deutschland_v1_karte.png")
+            dm.plot_dispatch(n, pa)
+            dm.plot_capacities(n, pb)
+            dm.plot_storage_prices(n, pc)
+            dm.plot_map(n, pm, era5_ok)
+            mc_df = (monte_carlo(n_mc, co2_budget_mt * 1e6, float(co2_price))
+                     if n_mc > 0 else
+                     pd.DataFrame([dict(Jahr=1, Kosten_MrdEa=n.objective/1e9,
+                                        CO2_Mt=co2, RE_Anteil_pct=ee,
+                                        Status="Basislauf")]))
+            pdf_path = os.path.join(od, "Deutschland_v1_Bericht.pdf")
+            dm.make_pdf(n, mc_df, {"Karte": pm, "Dispatch": pa,
+                                   "Kapazitäten": pb,
+                                   "Speicher & Preise": pc}, pdf_path)
+        st.success(f"✅ Bericht erstellt: `{pdf_path}`")
+        with open(pdf_path, "rb") as f:
+            st.download_button("⬇️ PDF herunterladen", f,
+                               file_name="Deutschland_v1_Bericht.pdf",
+                               mime="application/pdf")
+        st.image(pm, caption="Deutschlandkarte")

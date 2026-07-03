@@ -1,5 +1,8 @@
 # Secrets – NIEMALS hochladen!
-API.env
+.env
+
+# Ergebnis-Ordner und Wetterdaten (reproduzierbar, nicht versionieren)
+*_Output/
 Lummerland_Output
 era5_data
 
