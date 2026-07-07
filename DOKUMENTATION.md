@@ -1,0 +1,396 @@
+# 📘 Dokumentation – Deutschland Energy Model
+
+> **Stand:** 08.07.2026 · **Version:** v1.0
+> Diese Datei erklärt die beiden Kern-Skripte des Projekts und die wichtigsten
+> Funktionen & Formeln. Sie wird bei Änderungen am Code mitgepflegt.
+>
+> 💡 *Öffnen/Ansehen:* In VSCode diese Datei anklicken und oben rechts auf das
+> Vorschau-Symbol drücken oder `Strg`+`Shift`+`V`. Bei Bedarf lässt sie sich nach
+> Word/PDF exportieren (z. B. mit der VSCode-Erweiterung „Markdown PDF").
+
+---
+
+## Inhaltsverzeichnis
+1. [Überblick](#1-überblick)
+2. [Projektstruktur & Start](#2-projektstruktur--start)
+3. [`deutschland_v1.py` – Das Modell](#3-deutschland_v1py--das-modell)
+4. [`deutschland_gui.py` – Das Dashboard](#4-deutschland_guipy--das-dashboard)
+5. [Der Vergleich mit dem Ein-Knoten-Modell](#5-der-vergleich-mit-dem-ein-knoten-modell)
+6. [Formelsammlung (Kurzreferenz)](#6-formelsammlung-kurzreferenz)
+7. [Häufige Fragen / Troubleshooting](#7-häufige-fragen--troubleshooting)
+
+---
+
+## 1. Überblick
+
+Das Projekt optimiert ein **kostenminimales Stromsystem für Deutschland** mit dem
+Framework [PyPSA](https://pypsa.org). Es besteht aus zwei Teilen:
+
+| Datei | Rolle |
+|---|---|
+| **`deutschland_v1.py`** | Das eigentliche Modell: baut das Netz, löst die Optimierung, rechnet Kennzahlen. Kann als Skript **oder** als importierbares Modul laufen. |
+| **`deutschland_gui.py`** | Interaktives **Streamlit**-Dashboard, das `deutschland_v1.py` importiert und die Ergebnisse grafisch aufbereitet. |
+
+**Was wird optimiert?** Eine *Greenfield*-Kapazitätsausbau-Rechnung: Der Solver
+wählt Zubau von Wind, Solar, Gas, Speichern, Netz, Wärmepumpen und H₂ so, dass die
+**annualisierten Gesamtkosten minimal** werden – unter Einhaltung von Lastdeckung
+und CO₂-Budget.
+
+**Modell-Charakteristik:**
+- **5 Zonen:** Nord, Ost, West, Süd + Offshore (Nordsee), verbunden durch ein Übertragungsnetz.
+- **Sektorkopplung:** Strom ↔ Wärme (Wärmepumpen + Wärmespeicher) und Strom ↔ Wasserstoff (Elektrolyse, H₂-Tank, Brennstoffzelle).
+- **Zeitauflösung:** stündlich, 8760 Zeitschritte (Standardjahr).
+- **Wetter:** echte ERA5-Daten via `atlite` (falls verfügbar), sonst synthetische Profile.
+
+---
+
+## 2. Projektstruktur & Start
+
+```
+D:\Project_PyPSA\
+├── deutschland_v1.py        ← Modell (Kern)
+├── deutschland_gui.py       ← Streamlit-Dashboard
+├── DOKUMENTATION.md         ← diese Datei
+├── Produktionsdaten für PyPSA.xlsx   ← Referenz-Ein-Knoten-Modell (nur lokal)
+├── .venv\                   ← Python-Umgebung
+└── Deutschland_v1_Output\   ← erzeugte Plots & PDF-Bericht
+```
+
+**Dashboard starten:**
+```bash
+# im Projektordner, mit der venv:
+.venv\Scripts\streamlit.exe run deutschland_gui.py
+```
+Öffnet sich unter **http://localhost:8501**.
+
+**Nur das Modell als Skript rechnen (ohne GUI):**
+```bash
+.venv\Scripts\python.exe deutschland_v1.py
+```
+
+> ℹ️ Unter Windows sollte `PYTHONUTF8=1` gesetzt sein, damit Sonderzeichen (✓, ⚠)
+> in der Ausgabe nicht zu einem `UnicodeEncodeError` führen. Das Skript stellt
+> stdout/stderr beim Start aber ohnehin auf UTF-8 um.
+
+---
+
+## 3. `deutschland_v1.py` – Das Modell
+
+Aufbau in Abschnitten (die Nummern stehen als Kommentar-Banner im Code):
+
+### 3.1 Globale Parameter (Abschnitt 2)
+
+| Parameter | Wert | Bedeutung |
+|---|---|---|
+| `TIME_RES` | `1` | Stunden pro Zeitschritt (1 = volle Stundenauflösung) |
+| `HOURS` | `8760 / TIME_RES` | Anzahl Zeitschritte |
+| `DISCOUNT_RATE` | `0.07` | Kalkulationszins / WACC (per Slider änderbar) |
+| `CO2_PRICE` | `80 €/t` | CO₂-Preis auf fossile Grenzkosten |
+| `CO2_BUDGET` | `120 Mt/a` | Jährliches Emissionslimit |
+| `BASE_LOAD` | `62 000 MW` | mittlere elektrische Last (Peak ≈ 80 GW) |
+| `BASE_HEAT` | `45 000 MW` | mittlere elektrifizierbare Wärmelast |
+| `REGIONS` | dict | Regionen mit (lon, lat, Lastanteil, Wärmeanteil) |
+
+### 3.2 Annuitäten & Kosten (Abschnitt 3) — *wichtige Formeln*
+
+**Annuitätenfaktor** `annuity(lifetime, r)` — verteilt eine Investition über die
+Lebensdauer:
+
+$$a(n, r) = \frac{r}{1 - (1+r)^{-n}} \qquad \text{(bzw. } 1/n \text{ falls } r = 0)$$
+
+```python
+def annuity(lifetime, r=DISCOUNT_RATE):
+    return r / (1 - (1 + r) ** (-lifetime)) if r > 0 else 1 / lifetime
+```
+
+**Annualisierte Kapitalkosten** `capex_annual(key)`:
+
+$$\text{capex\_annual} = \text{Investition} \;[\text{€/MW}] \times a(\text{Lebensdauer},\ \text{DISCOUNT\_RATE})$$
+
+> Ein höherer Diskontsatz (WACC) → höhere jährliche Kapitalkosten → weniger
+> attraktiver Zubau. Genau das steuert der **WACC-Slider** in der GUI.
+
+**Grenzkosten (OPEX)** `opex(co2_price, gas_price)` — €/MWh je Technologie, inkl.
+CO₂-Aufschlag auf fossile Träger:
+
+| Träger | Grenzkosten-Formel |
+|---|---|
+| Gas (CCGT) | `gas_price + 0.370 · co2_price` |
+| Braunkohle (Lignite) | `28 + 1.000 · co2_price` |
+| Steinkohle (Hardcoal) | `40 + 0.800 · co2_price` |
+| Wind/Solar/Hydro | ~0 (nur kleiner Betriebskosten-Term) |
+
+> Der Faktor vor `co2_price` ist die **spezifische Emission** [t CO₂/MWh]. Dieselben
+> Faktoren stecken in den Carriern des Netzes (`co2_emissions`) und werden für die
+> CO₂-Bilanz genutzt.
+> Der **Gaspreis-Slider** verschiebt hierüber die *Merit-Order* (Einsatzreihenfolge).
+
+### 3.3 Wetterdaten (Abschnitt 4)
+
+- **`make_profiles(mc_seed)`** — liefert Kapazitätsfaktoren (0–1) je Region für
+  Wind & Solar.
+  - `mc_seed=None` → ERA5 (echte Wetterdaten) falls `atlite` verfügbar, sonst synthetisch.
+  - `mc_seed=i` → synthetisches Monte-Carlo-Wetterjahr `i`.
+- **`_synthetic_base()`** — erzeugt Basisprofile aus Jahres- und Tagesgang (Sinus/Cosinus) plus Rauschen (Weibull-verteilter Wind).
+- **`_era5_region(box)`** — lädt Wind-/PV-Kapazitätsfaktoren einer ERA5-Wetterbox über `atlite`.
+
+### 3.4 Lastprofile (Abschnitt 4) — *Formel*
+
+**`make_loads(load_scale, heat_scale, mc_seed)`** baut Strom- und Wärmelast je
+Region [MW]. Die Stromlast folgt einem Jahres- und Tagesgang:
+
+$$\text{last}(t) = \text{BASE\_LOAD} \cdot s_{\text{load}} \cdot \Big(1 + 0.20\cos\tfrac{2\pi(d-355)}{365}\Big)\cdot\Big(1 + 0.15\sin\tfrac{\pi(h-6)}{12}\Big)$$
+
+mit Tag-des-Jahres `d`, Stunde-des-Tages `h`, Skalierung `s_load` (Slider). Winterpeak
+(Tag 355 ≈ Weihnachten) und Tagesmittagsspitze sind eingebaut. Die Wärmelast ist analog,
+aber mit stärkerer Winter-Abhängigkeit (Faktor 0.55). Regional wird mit dem jeweiligen
+**Lastanteil** aus `REGIONS` multipliziert.
+
+### 3.5 Netzaufbau (Abschnitt 6) — *Herzstück*
+
+**`build_network(prof, loads, co2_budget, co2_price, gas_price)`** baut das komplette
+PyPSA-Netz:
+
+| Komponente | Details |
+|---|---|
+| **Carrier** | wind, solar, hydro, gas, lignite, hardcoal, battery, H2, AC, heat – jeweils mit `co2_emissions` |
+| **Buses** | 5 AC-Knoten (Regionen + Offshore) + 4 Wärme-Knoten + 1 H₂-Knoten |
+| **Lines** | 7 Übertragungsleitungen (u. a. „SuedLink"), alle erweiterbar |
+| **Generators** | Wind (on/offshore), Solar, Gas-CCGT, Braun-/Steinkohle, Laufwasser |
+| **StorageUnits** | Pumpspeicher Süd + Batterien (Ost/West/Süd) |
+| **H₂-System** | Elektrolyseur → H₂-Tank → Brennstoffzelle |
+| **Wärme** | Wärmepumpe (WP) + Wärmespeicher je Region, mit COP 2.8–3.1 |
+| **Loads** | Strom- und Wärmelast je Region |
+| **GlobalConstraint** | `co2_limit`: Summe der Emissionen ≤ `co2_budget` |
+
+Erweiterbare Anlagen (`p_nom_extendable=True`) haben `capital_cost = capex_annual(...)`
+und werden vom Solver optimal dimensioniert.
+
+### 3.6 Solver & Kennzahlen (Abschnitt 6b/7)
+
+- **`solve_network(net)`** — löst mit **Gurobi** (falls lizenziert), sonst **HiGHS**.
+  Nutzt `assign_all_duals=True`, damit Schattenpreise (Engpässe) verfügbar sind.
+- **`total_co2(net)`** — CO₂-Emissionen [t/a]:
+
+  $$\text{CO}_2 = \sum_{\text{Gen},\,t} p_{\text{Gen}}(t)\cdot \text{co2\_factor}(\text{Träger})\cdot\text{TIME\_RES}$$
+
+- **`re_share(net)`** — EE-Anteil [%] = Erzeugung aus **wind + solar + hydro**
+  geteilt durch die Gesamterzeugung × 100.
+
+### 3.7 Läufe
+
+- **`run_base(co2_budget, co2_price, load_scale, heat_scale, discount_rate, gas_price)`**
+  — baut + löst ein Szenario, liefert `(netz, era5_ok)`. Setzt bei Bedarf
+  `DISCOUNT_RATE` temporär und stellt ihn danach wieder her.
+- **`run_monte_carlo(n_mc, ...)`** — wiederholt den Lauf über `n_mc` synthetische
+  Wetterjahre und sammelt Kosten/CO₂/EE-Anteil in einer Tabelle (Robustheitsprüfung).
+
+### 3.8 Unter der Haube ① – Was der Solver *genau* macht
+
+PyPSA übersetzt das Netz in ein **lineares Optimierungsproblem (LP)** und übergibt es
+an den Solver (Gurobi/HiGHS). Da das Modell keine Ganzzahl-Entscheidungen enthält
+(keine An/Aus-Schaltlogik/Unit-Commitment), ist es ein *reines* LP und wird zum
+**globalen Kostenminimum** gelöst.
+
+**Zielfunktion** (wird minimiert) – die annualisierten Gesamtkosten:
+
+$$\min \;\underbrace{\sum_i c^{\text{capex}}_i \cdot P^{\text{nom}}_i}_{\text{Investition (Zubau)}} \;+\; \underbrace{\sum_{i,t} c^{\text{opex}}_i \cdot p_{i}(t)\cdot w_t}_{\text{Betrieb (Einsatz)}}$$
+
+- $P^{\text{nom}}_i$ = zu bauende Kapazität (Entscheidungsvariable, für erweiterbare Anlagen),
+- $p_i(t)$ = Einsatz/Erzeugung je Stunde (Entscheidungsvariable),
+- $w_t$ = `snapshot_weightings` (bei `TIME_RES` Stunden pro Schritt),
+- $c^{\text{capex}}$ = `capex_annual(...)`, $c^{\text{opex}}$ = `opex(...)`.
+
+**Nebenbedingungen** (was der Solver einhalten *muss*):
+
+| Bedingung | Bedeutung |
+|---|---|
+| **Energiebilanz je Knoten & Stunde** | An jedem Bus gilt: Erzeugung + Zufluss − Abfluss − Last = 0 (Kirchhoff'sche Knotenregel). |
+| **Erzeuger-Grenzen** | $0 \le p_i(t) \le p^{\text{max,pu}}_i(t)\cdot P^{\text{nom}}_i$ — Wind/Solar sind über den **Kapazitätsfaktor** wetterabhängig gedeckelt. |
+| **Leitungsflüsse** | Lastfluss ≤ Leitungskapazität; die Flüsse folgen der linearisierten (DC-)Lastflussphysik über die Reaktanzen. |
+| **Speicher-Dynamik** | Ladezustand(t) = Ladezustand(t−1) + η·Laden − Entladen/η; zyklisch (Anfang = Ende). |
+| **CO₂-Budget** | $\sum p \cdot \text{co2\_factor}\cdot w_t \le$ `co2_budget` (die `GlobalConstraint`). |
+| **Ausbaugrenzen** | $P^{\text{nom}}_{\min} \le P^{\text{nom}}_i \le P^{\text{nom}}_{\max}$. |
+
+**Wie wird gelöst?** Der Solver nutzt Simplex- oder Innere-Punkte-(Barrier-)Verfahren
+und findet die kostenminimale Kombination aus **Zubau** *und* **stündlichem Einsatz**
+gleichzeitig.
+
+**Schattenpreise (Duale) = die Preise im Modell.** Zu jeder Nebenbedingung liefert das
+LP einen „Dualwert": wie stark sinken die Gesamtkosten, wenn man die Bedingung um eine
+Einheit lockert. Deshalb ist der **Knotenpreis** (Strompreis einer Region) exakt der
+Dualwert der Energiebilanz – die Grenzkosten der nächsten MWh an diesem Knoten. Die
+Engpass-Schattenpreise im Tab *Engpässe* sind die Duale der Leitungs-/Erzeugergrenzen
+(dafür läuft der Solver mit `assign_all_duals=True`).
+
+### 3.9 Unter der Haube ② – Wie `atlite` ERA5-Wetter in Erzeugung umrechnet
+
+Das Modell rechnet **nicht** mit Windgeschwindigkeit oder Einstrahlung direkt, sondern
+mit **Kapazitätsfaktoren** (0–1) – dem Anteil der Nennleistung, den eine Anlage in einer
+Stunde liefern kann. Diese Umrechnung übernimmt die Bibliothek `atlite` in
+`_era5_region()`; das Ergebnis wird als `p_max_pu` an die Generatoren gehängt.
+
+**Wind** — `cut.wind(turbine="Vestas_V112_3MW", per_unit=True, …)`:
+1. ERA5 liefert die **Windgeschwindigkeit** (≈100 m Höhe) je Gitterzelle und Stunde.
+2. `atlite` **extrapoliert** sie auf die **Nabenhöhe** der Turbine (logarithmisches
+   Windprofil mit der Oberflächen-Rauhigkeit aus ERA5).
+3. Auf die Nabenhöhen-Windgeschwindigkeit wird die **Leistungskennlinie** der Turbine
+   angewandt (Anlauf ~3 m/s, Nennleistung ~12 m/s, Abschaltung ~25 m/s). Das ergibt
+   die momentane Leistung → geteilt durch die Nennleistung = **Kapazitätsfaktor**.
+
+**Solar (PV)** — `cut.pv(panel="CSi", orientation={"slope":35, "azimuth":180}, …)`:
+1. ERA5 liefert die **Solarstrahlung** (direkt + diffus) und die Lufttemperatur.
+2. `atlite` berechnet den **Sonnenstand** und transponiert die Strahlung auf die
+   **geneigte Modulebene** (hier 35° Neigung, nach Süden = Azimut 180°).
+3. Ein **Panel-Modell** (kristallines Silizium, `CSi`) rechnet Einstrahlung → Leistung,
+   inkl. **Temperatur-Korrektur** (heiße Module = etwas weniger Wirkungsgrad). Ergebnis:
+   **Kapazitätsfaktor**.
+
+**Danach im Modell:** Die tatsächliche Erzeugung ist immer
+
+$$p_{\text{EE}}(t) \;=\; P^{\text{nom}} \times \text{Kapazitätsfaktor}(t)$$
+
+wobei der Solver $P^{\text{nom}}$ (Zubau) optimiert und den Kapazitätsfaktor als feste
+wetterabhängige Obergrenze `p_max_pu(t)` erhält. Ohne ERA5 (kein `atlite`) liefert
+`_synthetic_base()` ersatzweise plausible Kapazitätsfaktoren aus Jahres-/Tagesgang plus
+Zufall.
+
+> ℹ️ **Kurz gesagt:** ERA5 = physikalisches Wetter → `atlite` macht daraus über
+> Turbinen-/Panel-Kennlinien einen **Kapazitätsfaktor** → der Solver entscheidet, wie
+> viel Kapazität sich lohnt und wie sie stündlich eingesetzt wird.
+
+---
+
+## 4. `deutschland_gui.py` – Das Dashboard
+
+Ein **Streamlit**-Overlay über das Modell. Grundprinzip: Sidebar-Parameter → Klick
+auf *„Modell optimieren"* → gecachter Lauf → Ergebnis-Tabs.
+
+### 4.1 Sidebar-Slider
+
+| Gruppe | Slider | Wirkung im Modell |
+|---|---|---|
+| 🌍 Klima | **CO₂-Budget (Mt/a)** | Obergrenze `co2_limit` |
+| 🌍 Klima | **CO₂-Preis (€/t)** | Aufschlag in `opex()` |
+| 🔌 Nachfrage | **Stromlast-Skalierung** | `load_scale` in `make_loads()` |
+| 🔌 Nachfrage | **Wärmelast-Skalierung** | `heat_scale` (Elektrifizierung/Wärmepumpen) |
+| 💰 Ökonomie | **Diskontsatz / WACC (%)** | `DISCOUNT_RATE` → Kapitalkosten des Zubaus |
+| 💰 Ökonomie | **Gaspreis (€/MWh_th)** | `gas_price` → Merit-Order |
+| — | **Monte-Carlo Wetterjahre (0–60)** | Anzahl Robustheitsläufe |
+
+### 4.2 Caching (wichtig zu verstehen)
+
+```python
+@st.cache_resource   # solve(): pro Parameter-Kombination genau ein Lauf
+@st.cache_data       # monte_carlo(), load_ref(): Ergebnisse gecacht
+```
+→ Gleiche Slider-Werte = **kein** Neurechnen. Neue Werte = neuer Lauf. Der Button
+„🔄 Cache leeren & neu optimieren" (Tab *Engpässe*) erzwingt eine Neuberechnung.
+
+### 4.3 Die Tabs
+
+| Tab | Inhalt |
+|---|---|
+| 📊 **Dispatch** | Wochenweiser Erzeugungsverlauf (gestapelt) vs. Last |
+| 🏗️ **Kapazitäten** | Optimierter Zubau je Anlage, Jahreserzeugung, Netz-/Sektorausbau |
+| 💶 **Preise** | Knotenpreise je Region (Verlauf, Verteilung, Monatsheatmap) |
+| 🔋 **Speicher & H₂** | Füllstände Batterien, Pumpspeicher, H₂-Tank, Wärmespeicher |
+| 🗺️ **Karte** | Geografische Karte mit Leitungsauslastung (Ampelfarben) |
+| 🚧 **Engpässe** | Schattenpreise (Duale): Leitungs- & Erzeuger-Knappheit, Sektorpreise |
+| ⚖️ **Vergleich** | 5-Zonen-Modell vs. Ein-Knoten-Referenz (→ Kapitel 5) |
+| 🎲 **Monte-Carlo** | Kosten/CO₂/EE über mehrere Wetterjahre |
+| 📄 **Bericht** | Erzeugt Plots + PDF-Bericht zum Download |
+
+> ⚠️ **Streamlit-Regel:** Jedes interaktive Widget braucht eine eindeutige ID. Zwei
+> gleiche Widgets (z. B. zwei „Woche im Jahr"-Slider) mit identischen Parametern
+> kollidieren → `StreamlitDuplicateElementId`. Lösung: `key="…"` vergeben (siehe
+> `key="woche_vergleich"` im Vergleich-Tab).
+
+---
+
+## 5. Der Vergleich mit dem Ein-Knoten-Modell
+
+Der Tab **⚖️ Vergleich** stellt das eigene 5-Zonen-Modell einem externen
+**Ein-Knoten-Deutschland-Modell** („Kupferplatte", ein einziger Knoten) gegenüber,
+das als Excel vorliegt.
+
+### 5.1 Die Referenzdaten
+
+`Produktionsdaten für PyPSA.xlsx` enthält je Blatt (**Wetterjahr 2007 / 2009**,
+Verbrauchsjahr 2026) stündliche **Dispatch-Zeitreihen** [MW] je Technologie plus die
+Last. Die Datei wird nur **lokal** vorgehalten (nicht im Git-Repo).
+
+### 5.2 Träger-Mapping (`EXCEL_CARRIER_MAP`)
+
+| Excel-Spalte | → Modell-Träger |
+|---|---|
+| `de-wind-on`, `de-wind-off` | **wind** |
+| `de-sun` | **solar** |
+| `de-water`, `de-pwater` | **hydro** |
+| `de-nat gas` | **gas** |
+| `de-lignite` | **lignite** |
+| `de-coal` | **hardcoal** |
+| `de-biomass`, `de-waste`, `de-fuel oil`, `de-other` | eigene Kategorien (im Modell nicht vorhanden) |
+
+### 5.3 Wichtige Funktionen (in `deutschland_v1.py`)
+
+- **`load_reference(sheet)`** — liest ein Wetterjahr-Blatt, aggregiert die
+  Excel-Träger auf die Modell-Träger, richtet die Zeitreihen positionsweise auf die
+  Modell-Snapshots aus (Stunde-des-Jahres) und berechnet Kennzahlen:
+  - Jahreserzeugung [TWh] je Träger, Stromlast [TWh]
+  - **EE-Anteil** (gleiche Definition wie `re_share`: wind + solar + hydro)
+  - **Vergleichbare CO₂-Emission** mit denselben Emissionsfaktoren
+    (`EXCEL_CO2 = {gas 0.37, lignite 1.0, hardcoal 0.8, oil 0.65}`)
+- **`model_energy_by_carrier(net)`** — Jahreserzeugung [TWh] je Träger des Modells.
+- **`model_gen_hourly(net)`** — stündliche Erzeugung je Träger (für das Overlay).
+
+### 5.4 Was der Tab zeigt
+
+1. **KPI-Gegenüberstellung** (Erzeugung, Last, EE-Anteil, CO₂, Peak-Last) + Deltas.
+2. **Erzeugungsmix** als gruppiertes Balkendiagramm (Modell vs. Referenz je Träger).
+3. **Dispatch-Overlay** — beide Kurven übereinander, wählbar nach Größe
+   (Gesamterzeugung / Last / EE / einzelner Träger) und Woche.
+
+> **Ehrliche Einschränkungen** (stehen auch als Hinweis im Tab):
+> - **Kosten** werden nicht verglichen (die Excel enthält keine Kostendaten).
+> - Träger wie *biomass/waste/oil* gibt es nur im Ein-Knoten-Modell; *Batterie/H₂/
+>   Pumpspeicher* des 5-Zonen-Modells sind keine Generatoren und daher nicht im Mix.
+> - Die Wetterjahre unterscheiden sich → Overlay erfolgt über die **Stunde des
+>   Jahres**, nicht über das Kalenderdatum.
+
+---
+
+## 6. Formelsammlung (Kurzreferenz)
+
+| Größe | Formel |
+|---|---|
+| Annuitätenfaktor | `a(n,r) = r / (1 − (1+r)^−n)` |
+| Jährl. Kapitalkosten | `capex_annual = Investition · a(Lebensdauer, WACC)` |
+| Grenzkosten Gas | `gas_price + 0.370 · co2_price` |
+| Grenzkosten Braunkohle | `28 + 1.000 · co2_price` |
+| Grenzkosten Steinkohle | `40 + 0.800 · co2_price` |
+| CO₂-Emission | `Σ p_gen · co2_factor(Träger) · TIME_RES` |
+| EE-Anteil | `100 · Σp(wind,solar,hydro) / Σp_gesamt` |
+| Stromlast | `BASE_LOAD · s · (1+0.20·cos…) · (1+0.15·sin…)` |
+| Referenz-CO₂ | `Σ dispatch[c] · EXCEL_CO2[c]` |
+
+**Emissionsfaktoren [t CO₂/MWh]:** Gas 0.370 · Steinkohle 0.800 · Braunkohle 1.000 ·
+Öl 0.650 · Wind/Solar/Hydro/Biomasse 0.
+
+---
+
+## 7. Häufige Fragen / Troubleshooting
+
+| Problem | Ursache & Lösung |
+|---|---|
+| `UnicodeEncodeError: … '✓'` | Windows-Konsole nutzt cp1252. Skript stellt stdout auf UTF-8 um; alternativ `PYTHONUTF8=1` setzen. |
+| `ModuleNotFoundError: openpyxl` | Für den Excel-Import nötig: `pip install openpyxl` (steht in der Auto-Install-Liste). |
+| `StreamlitDuplicateElementId` | Zwei gleiche Widgets → einem ein `key="…"` geben. |
+| `did not find executable … python.exe` | `.venv\pyvenv.cfg` zeigt auf einen alten Profilpfad → Pfad dort korrigieren. |
+| Vergleich-Tab: „Referenz-Excel nicht gefunden" | `Produktionsdaten für PyPSA.xlsx` muss im Projektordner liegen. |
+| Optimierung dauert ewig | Monte-Carlo-Jahre reduzieren; jeder Lauf ist eine komplette Optimierung. |
+
+---
+
+*Diese Doku wird bei Code-Änderungen aktualisiert. Letzte inhaltliche Pflege siehe
+„Stand" ganz oben.*
