@@ -19,7 +19,7 @@
 #  NEU gegenüber Lummerland:
 #  ✓ Als Modul importierbar (alle Läufe hinter Funktionen / __main__)
 #  ✓ Braunkohle (Ost), Steinkohle (West), Laufwasser + Pumpspeicher (Sued)
-#  ✓ Zeitauflösung wählbar (Standard 3h – Deutschland-Modell bleibt lösbar)
+#  ✓ Zeitauflösung wählbar (Standard 1h – Deutschland-Modell bleibt lösbar)
 # =============================================================
 
 # ── stdlib ───────────────────────────────────────────────────
@@ -65,6 +65,7 @@ def install_if_missing(packages: list[tuple[str, str]]) -> None:
 install_if_missing([
     ("pypsa", "pypsa"), ("highspy", "highspy"), ("pandas", "pandas"),
     ("numpy", "numpy"), ("matplotlib", "matplotlib"), ("scipy", "scipy"),
+    ("openpyxl", "openpyxl"),   # zum Einlesen der Referenz-Excel (Ein-Knoten-Modell)
 ])
 
 # ── third-party ──────────────────────────────────────────────
@@ -170,15 +171,18 @@ CAPEX: dict[str, tuple[int, int]] = {          # (€/MW bzw. €/MWh, Lebensdau
 }
 
 def capex_annual(key: str) -> float:
-    """Annualisierte Kapitalkosten [€/MW/a]."""
+    """Annualisierte Kapitalkosten [€/MW/a] – nutzt den aktuellen DISCOUNT_RATE."""
     c, lt = CAPEX[key]
-    return c * annuity(lt)
+    return c * annuity(lt, DISCOUNT_RATE)
 
-def opex(co2_price: float = CO2_PRICE) -> dict[str, float]:
-    """Grenzkosten [€/MWh] inkl. CO₂-Preis auf fossile Träger."""
+def opex(co2_price: float = CO2_PRICE, gas_price: float = 55.0) -> dict[str, float]:
+    """Grenzkosten [€/MWh] inkl. CO₂-Preis auf fossile Träger.
+
+    gas_price = Brennstoffkosten Gas [€/MWh_th]; Kohlepreise skalieren
+    relativ dazu mit (Standard: Gas 55, Braunkohle 28, Steinkohle 40)."""
     return {
         "Wind_on": 0.1, "Wind_off": 0.1, "Solar": 0.05, "Hydro": 0.5,
-        "Gas_CCGT":  55. + 0.370 * co2_price,
+        "Gas_CCGT":  gas_price + 0.370 * co2_price,
         "Lignite":   28. + 1.000 * co2_price,
         "Hardcoal":  40. + 0.800 * co2_price,
         "Battery": 0.5, "H2_elec": 1., "H2_FC": 2., "HeatPump": 1.,
@@ -298,9 +302,10 @@ def _style_ax(ax, title, xlabel="", ylabel="", bg_inner="#1a2a3a"):
 # =============================================================
 def build_network(prof: dict, loads: dict,
                   co2_budget: float = CO2_BUDGET,
-                  co2_price: float = CO2_PRICE) -> "pypsa.Network":
+                  co2_price: float = CO2_PRICE,
+                  gas_price: float = 55.0) -> "pypsa.Network":
     """Baut das 5-Zonen-Deutschland-Netz mit Sektorkopplung."""
-    OP = opex(co2_price)
+    OP = opex(co2_price, gas_price)
     net = pypsa.Network()
     net.set_snapshots(snapshots)
     net.snapshot_weightings.loc[:, :] = TIME_RES   # 3h-Schritte korrekt gewichten
@@ -458,20 +463,150 @@ def re_share(net) -> float:
     return 100. * ee / p.sum() if p.sum() > 0 else 0.
 
 # =============================================================
+#  6c) REFERENZ – EIN-KNOTEN-MODELL (Excel) FÜR DEN VERGLEICH
+# =============================================================
+#  Die Excel enthält stündliche Dispatch-Zeitreihen (MW) je Technologie
+#  eines Ein-Knoten-Deutschland-Modells (Kupferplatte) für zwei Wetter-
+#  jahre (2007, 2009) bei Verbrauchsjahr 2026 – plus die Last.
+REFERENCE_XLSX   = os.path.join(SCRIPT_DIR, "Produktionsdaten für PyPSA.xlsx")
+REFERENCE_SHEETS = ["2007", "2009"]        # verfügbare Wetterjahre
+
+# Excel-Spalte → Modell-Träger (mehrere Excel-Spalten dürfen zusammenfallen)
+EXCEL_CARRIER_MAP = {
+    "de-wind-on":  "wind",    "de-wind-off": "wind",
+    "de-sun":      "solar",
+    "de-water":    "hydro",   "de-pwater":   "hydro",
+    "de-nat gas":  "gas",
+    "de-lignite":  "lignite",
+    "de-coal":     "hardcoal",
+    # Träger ohne Entsprechung im 5-Zonen-Modell – bleiben als eigene Kategorie:
+    "de-biomass":  "biomass", "de-waste":    "waste",
+    "de-fuel oil": "oil",     "de-other":    "other",
+}
+# CO₂-Faktoren [t/MWh] für eine vergleichbare Referenz-Emission.
+# wind/solar/hydro/biomass/waste = 0 (biogen), fossile analog zum Modell.
+EXCEL_CO2 = {"gas": 0.370, "lignite": 1.0, "hardcoal": 0.8, "oil": 0.65}
+# EE-Definition konsistent zu re_share(): nur wind, solar, hydro.
+_RE_CARRIERS = ("wind", "solar", "hydro")
+
+
+def reference_available(path: str = REFERENCE_XLSX) -> bool:
+    """True, wenn die Referenz-Excel vorhanden ist."""
+    return os.path.exists(path)
+
+
+def load_reference(sheet: str = "2007", path: str = REFERENCE_XLSX,
+                   time_res: int | None = None,
+                   index=None) -> dict:
+    """Lädt ein Wetterjahr-Blatt der Ein-Knoten-Referenz und bereitet es
+    zum Vergleich mit dem 5-Zonen-Modell auf.
+
+    Rückgabe (dict):
+      sheet        : Blattname (Wetterjahr)
+      gen_hourly   : DataFrame – Erzeugung [MW] je Modell-Träger, auf die
+                     Modell-Auflösung/-Snapshots ausgerichtet (für Overlay)
+      load         : Series    – Stromlast [MW], gleiche Ausrichtung
+      energy_twh   : Series    – Jahreserzeugung [TWh] je Modell-Träger
+      kpi          : dict      – erzeugung_twh, last_twh, ee_pct, co2_mt,
+                                 peak_last_gw, mittel_last_gw
+    """
+    tr = TIME_RES if time_res is None else time_res
+    idx = snapshots if index is None else index
+
+    raw = pd.read_excel(path, sheet_name=sheet)
+    raw["dim_1"] = pd.to_datetime(raw["dim_1"])
+    # Nur das Verbrauchsjahr 2026 (die 2 Vorlaufstunden aus Dez. 2025 weg)
+    df = raw[raw["dim_1"].dt.year == 2026].sort_values("dim_1").reset_index(drop=True)
+    gen_cols = [c for c in df.columns if c not in ("dim_1", "load")]
+
+    # Excel-Träger → Modell-Träger aggregieren (MW, stündlich)
+    hourly = pd.DataFrame(index=range(len(df)))
+    for col in gen_cols:
+        tgt = EXCEL_CARRIER_MAP.get(col, col.replace("de-", ""))
+        hourly[tgt] = hourly.get(tgt, 0.0) + df[col].to_numpy(dtype=float)
+    load_h = df["load"].to_numpy(dtype=float)
+
+    # Jahresenergie [TWh]  (stündlich → MWh → TWh)
+    energy_twh = (hourly.sum() / 1e6)
+    last_twh   = float(load_h.sum() / 1e6)
+
+    # Vergleichbare CO₂-Emission [Mt/a]
+    co2_t = sum(hourly[c].sum() * EXCEL_CO2[c]
+                for c in EXCEL_CO2 if c in hourly)
+    co2_mt = co2_t / 1e6
+
+    # EE-Anteil [%]
+    ee_twh = energy_twh[[c for c in _RE_CARRIERS if c in energy_twh]].sum()
+    ee_pct = 100. * ee_twh / energy_twh.sum() if energy_twh.sum() > 0 else 0.
+
+    # Auf Modell-Auflösung bringen: je tr Stunden mitteln, dann auf Länge
+    # der Modell-Snapshots kürzen/auffüllen und mit deren Index versehen.
+    n_steps = len(idx)
+    if tr > 1:
+        agg = hourly.groupby(np.arange(len(hourly)) // tr).mean()
+        load_agg = pd.Series(load_h).groupby(np.arange(len(load_h)) // tr).mean()
+    else:
+        agg = hourly.copy()
+        load_agg = pd.Series(load_h)
+    agg = agg.iloc[:n_steps].reset_index(drop=True)
+    load_agg = load_agg.iloc[:n_steps].reset_index(drop=True)
+    # Positionsweise auf Modell-Snapshots ausrichten (Stunde-des-Jahres)
+    agg.index = idx[:len(agg)]
+    load_agg.index = idx[:len(load_agg)]
+
+    return dict(
+        sheet=sheet,
+        gen_hourly=agg,
+        load=load_agg,
+        energy_twh=energy_twh,
+        kpi=dict(
+            erzeugung_twh=float(energy_twh.sum()),
+            last_twh=last_twh,
+            ee_pct=float(ee_pct),
+            co2_mt=float(co2_mt),
+            peak_last_gw=float(load_h.max() / 1000.),
+            mittel_last_gw=float(load_h.mean() / 1000.),
+        ),
+    )
+
+
+def model_energy_by_carrier(net) -> pd.Series:
+    """Jahreserzeugung [TWh] je Träger des gelösten 5-Zonen-Modells."""
+    return (net.generators_t.p.T.groupby(net.generators.carrier).sum().T.sum()
+            * TIME_RES / 1e6)
+
+
+def model_gen_hourly(net) -> pd.DataFrame:
+    """Erzeugung [MW] je Träger, stündlich (für Zeitreihen-Overlay)."""
+    return net.generators_t.p.T.groupby(net.generators.carrier).sum().T
+
+
+# =============================================================
 #  7) BASISOPTIMIERUNG + MONTE-CARLO (als Funktionen)
 # =============================================================
 def run_base(co2_budget=CO2_BUDGET, co2_price=CO2_PRICE,
-             load_scale=1.0, heat_scale=1.0, verbose=True):
-    """Baut, löst und liefert (Netz, ERA5-Flag)."""
-    prof, era5_ok = make_profiles()
-    loads = make_loads(load_scale, heat_scale)
-    net = build_network(prof, loads, co2_budget, co2_price)
+             load_scale=1.0, heat_scale=1.0,
+             discount_rate=None, gas_price=55.0, verbose=True):
+    """Baut, löst und liefert (Netz, ERA5-Flag).
+
+    discount_rate = WACC (z. B. 0.07); None → globaler Standard.
+    gas_price     = Gas-Brennstoffkosten [€/MWh_th]."""
+    global DISCOUNT_RATE
+    _prev_dr = DISCOUNT_RATE
+    if discount_rate is not None:
+        DISCOUNT_RATE = float(discount_rate)
     try:
-        gur = solve_network(net, verbose)
-    except Exception as e:
-        print(f"⚠ Solver: {e} → 6h-Fallback")
-        net.set_snapshots(net.snapshots[::2])
-        gur = solve_network(net, verbose)
+        prof, era5_ok = make_profiles()
+        loads = make_loads(load_scale, heat_scale)
+        net = build_network(prof, loads, co2_budget, co2_price, gas_price)
+        try:
+            gur = solve_network(net, verbose)
+        except Exception as e:
+            print(f"⚠ Solver: {e} → 6h-Fallback")
+            net.set_snapshots(net.snapshots[::2])
+            gur = solve_network(net, verbose)
+    finally:
+        DISCOUNT_RATE = _prev_dr   # globalen WACC wiederherstellen
     if verbose:
         print("✓ Gurobi" if gur else "✓ HiGHS",
               f"| {net.objective/1e9:.2f} Mrd €/a | CO₂ {total_co2(net)/1e6:.1f} Mt")

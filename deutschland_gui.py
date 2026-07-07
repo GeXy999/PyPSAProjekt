@@ -27,13 +27,30 @@ st.caption("5 Zonen · Sektorkopplung (Wärme + H₂) · CO₂-Budget · "
 # ----------------------------------------------------------------------
 sb = st.sidebar
 sb.header("🎛️ Szenario")
-co2_budget_mt = sb.slider("CO₂-Budget (Mt/a)", 0, 250, 120, step=10)
-co2_price     = sb.slider("CO₂-Preis (€/t)", 0, 400, 80, step=10)
-load_scale    = sb.slider("Stromlast-Skalierung", 0.7, 1.5, 1.0, step=0.05)
+
+sb.subheader("🌍 Klima")
+co2_budget_mt = sb.slider("CO₂-Budget (Mt/a)", 0, 250, 120, step=10,
+                          help="Jährliches Emissionslimit des Stromsektors")
+co2_price     = sb.slider("CO₂-Preis (€/t)", 0, 400, 80, step=10,
+                          help="Aufschlag auf fossile Grenzkosten")
+
+sb.subheader("🔌 Nachfrage")
+load_scale    = sb.slider("Stromlast-Skalierung", 0.7, 1.5, 1.0, step=0.05,
+                          help="Skaliert die elektrische Grundlast")
 heat_scale    = sb.slider("Wärmelast-Skalierung (Elektrifizierung)",
-                          0.3, 1.5, 1.0, step=0.05)
+                          0.3, 1.5, 1.0, step=0.05,
+                          help="Elektrifizierbare Wärmenachfrage (Wärmepumpen)")
+
+sb.subheader("💰 Ökonomie")
+discount_pct  = sb.slider("Diskontsatz / WACC (%)", 1.0, 12.0, 7.0, step=0.5,
+                          help="Kapitalkosten des Zubaus – höher = teurer "
+                               "Ausbau, weniger Neubau erneuerbarer Kapazität")
+gas_price     = sb.slider("Gaspreis (€/MWh_th)", 10, 120, 55, step=5,
+                          help="Brennstoffkosten Gas – verschiebt die Merit-Order "
+                               "zwischen Gas, Kohle und Erneuerbaren")
+
 sb.divider()
-n_mc   = sb.slider("Monte-Carlo Wetterjahre", 0, 10, 0,
+n_mc   = sb.slider("Monte-Carlo Wetterjahre", 0, 60, 0,
                    help="0 = überspringen (schneller)")
 run_btn = sb.button("🚀 Modell optimieren", type="primary",
                     width="stretch")
@@ -46,9 +63,11 @@ sb.caption(f"Solver: {'Gurobi' if dm.USE_GUROBI else 'HiGHS'} · "
 # ----------------------------------------------------------------------
 @st.cache_resource(show_spinner="⏳ Optimiere Deutschland-Modell … "
                                 "(je nach Rechner 1–10 min)")
-def solve(co2_budget, co2_price, load_scale, heat_scale):
+def solve(co2_budget, co2_price, load_scale, heat_scale,
+          discount_rate, gas_price):
     net, era5_ok = dm.run_base(co2_budget=co2_budget, co2_price=co2_price,
                                load_scale=load_scale, heat_scale=heat_scale,
+                               discount_rate=discount_rate, gas_price=gas_price,
                                verbose=False)
     return net, era5_ok
 
@@ -56,6 +75,10 @@ def solve(co2_budget, co2_price, load_scale, heat_scale):
 def monte_carlo(n_mc, co2_budget, co2_price):
     return dm.run_monte_carlo(n_mc=n_mc, co2_budget=co2_budget,
                               co2_price=co2_price)
+
+@st.cache_data(show_spinner="⏳ Lade Referenz-Excel (Ein-Knoten-Modell) …")
+def load_ref(sheet):
+    return dm.load_reference(sheet=sheet)
 
 if "ran" not in st.session_state:
     st.session_state.ran = False
@@ -66,7 +89,8 @@ if not st.session_state.ran:
     st.stop()
 
 n, era5_ok = solve(co2_budget_mt * 1e6, float(co2_price),
-                   float(load_scale), float(heat_scale))
+                   float(load_scale), float(heat_scale),
+                   float(discount_pct) / 100., float(gas_price))
 
 # ----------------------------------------------------------------------
 # KPI-Zeile
@@ -88,9 +112,10 @@ if not era5_ok:
 
 FARBEN = dm.CARRIER_COLORS
 
-tab_disp, tab_kap, tab_preis, tab_spei, tab_karte, tab_eng, tab_mc, tab_pdf = st.tabs(
+(tab_disp, tab_kap, tab_preis, tab_spei, tab_karte, tab_eng,
+ tab_vgl, tab_mc, tab_pdf) = st.tabs(
     ["📊 Dispatch", "🏗️ Kapazitäten", "💶 Preise", "🔋 Speicher & H₂",
-     "🗺️ Karte", "🚧 Engpässe", "🎲 Monte-Carlo", "📄 Bericht"])
+     "🗺️ Karte", "🚧 Engpässe", "⚖️ Vergleich", "🎲 Monte-Carlo", "📄 Bericht"])
 
 # ── Dispatch ──────────────────────────────────────────────────────────
 with tab_disp:
@@ -282,6 +307,117 @@ with tab_eng:
     st.plotly_chart(px.line(wo_s, labels={"value": "€/MWh", "snapshot": ""},
                             title="H₂- und Wärmepreise (Wochenmittel)"),
                     width="stretch")
+
+# ── Vergleich: 5-Zonen-Modell vs. Ein-Knoten-Referenz (Excel) ─────────
+with tab_vgl:
+    st.subheader("⚖️ 5-Zonen-Modell vs. Ein-Knoten-Referenz")
+    st.caption("Vergleich des aktuell optimierten 5-Zonen-Modells mit dem "
+               "Ein-Knoten-Deutschland-Modell aus der Excel "
+               "(Dispatch-Zeitreihen, Verbrauch 2026, ERA5-Wetter 2007/2009).")
+
+    if not dm.reference_available():
+        st.warning(f"Referenz-Excel nicht gefunden unter "
+                   f"`{dm.REFERENCE_XLSX}`. Datei dort ablegen und Seite neu "
+                   f"laden.")
+    else:
+        jahr = st.radio("Wetterjahr der Referenz", dm.REFERENCE_SHEETS,
+                        horizontal=True,
+                        help="ERA5-Wetterjahr des Ein-Knoten-Modells")
+        ref = load_ref(jahr)
+        rk = ref["kpi"]
+
+        # Modell-KPIs (aus dem gelösten Netz)
+        m_erz = dm.model_energy_by_carrier(n)
+        m_last_series = n.loads_t.p_set[[f"Last_{r}" for r in dm.REGIONS]].sum(axis=1)
+        m_last_twh = float(m_last_series.sum() * dm.TIME_RES / 1e6)
+        m_peak_gw  = float(m_last_series.max() / 1000.)
+
+        # ── KPI-Gegenüberstellung ────────────────────────────────────
+        st.markdown("##### Kennzahlen im Vergleich")
+        vgl = pd.DataFrame({
+            "Kennzahl": ["Erzeugung (TWh/a)", "Stromlast (TWh/a)",
+                         "EE-Anteil (%)", "CO₂ vergleichbar (Mt/a)",
+                         "Peak-Last (GW)"],
+            "5-Zonen-Modell": [float(m_erz.sum()), m_last_twh, ee, co2, m_peak_gw],
+            f"Referenz {jahr}": [rk["erzeugung_twh"], rk["last_twh"],
+                                 rk["ee_pct"], rk["co2_mt"], rk["peak_last_gw"]],
+        })
+        vgl["Δ (Modell − Ref.)"] = vgl["5-Zonen-Modell"] - vgl[f"Referenz {jahr}"]
+        c1, c2, c3 = st.columns(3)
+        c1.metric("EE-Anteil Modell", f"{ee:,.1f} %",
+                  delta=f"{ee - rk['ee_pct']:+.1f} pp vs. Ref.")
+        c2.metric("CO₂ Modell", f"{co2:,.1f} Mt/a",
+                  delta=f"{co2 - rk['co2_mt']:+.1f} vs. Ref.",
+                  delta_color="inverse")
+        c3.metric("Erzeugung Modell", f"{m_erz.sum():,.0f} TWh/a",
+                  delta=f"{m_erz.sum() - rk['erzeugung_twh']:+.0f} vs. Ref.")
+        st.dataframe(vgl.round(2), width="stretch", hide_index=True)
+        st.caption("CO₂ „vergleichbar\" = mit identischen Emissionsfaktoren "
+                   "(Gas 0,37 · Steinkohle 0,8 · Braunkohle 1,0 · Öl 0,65 t/MWh) "
+                   "aus dem Dispatch berechnet. Kosten werden nicht verglichen, "
+                   "da die Excel keine Kostendaten enthält.")
+
+        # ── Erzeugungsmix je Träger ──────────────────────────────────
+        st.markdown("##### Jahreserzeugung je Träger (TWh)")
+        traeger = sorted(set(m_erz.index) | set(ref["energy_twh"].index))
+        mix = pd.DataFrame({
+            "Träger": traeger,
+            "5-Zonen-Modell": [float(m_erz.get(t, 0.)) for t in traeger],
+            f"Referenz {jahr}": [float(ref["energy_twh"].get(t, 0.)) for t in traeger],
+        })
+        mix_long = mix.melt(id_vars="Träger", var_name="Modell", value_name="TWh")
+        fig = px.bar(mix_long, x="Träger", y="TWh", color="Modell",
+                     barmode="group",
+                     color_discrete_map={"5-Zonen-Modell": "#4A90D9",
+                                         f"Referenz {jahr}": "#E8734C"})
+        st.plotly_chart(fig, width="stretch")
+        st.caption("Träger wie **biomass, waste, oil, other** existieren nur im "
+                   "Ein-Knoten-Modell; **battery/H₂/Pumpspeicher** des 5-Zonen-"
+                   "Modells sind hier keine Generatoren und daher nicht im Mix.")
+
+        # ── Zeitreihen-Overlay ───────────────────────────────────────
+        st.markdown("##### Dispatch-Overlay (Stunde des Jahres)")
+        m_hourly = dm.model_gen_hourly(n)
+        r_hourly = ref["gen_hourly"]
+        opt_carrier = sorted(set(m_hourly.columns) | set(r_hourly.columns))
+        col_a, col_b = st.columns([1, 2])
+        auswahl = col_a.selectbox(
+            "Größe", ["Gesamterzeugung", "Stromlast", "EE (Wind+Solar+Hydro)"]
+            + opt_carrier)
+        woche = col_b.select_slider("Woche im Jahr",
+                                    options=list(range(1, 53)), value=2,
+                                    key="woche_vergleich")
+        steps = 7 * 24 // dm.TIME_RES
+        sl = slice((woche - 1) * steps, woche * steps)
+
+        def _series(kind):
+            """(Modell-Serie GW, Referenz-Serie GW) für die gewählte Größe."""
+            ee_c = ["wind", "solar", "hydro"]
+            if kind == "Gesamterzeugung":
+                return m_hourly.sum(axis=1), r_hourly.sum(axis=1)
+            if kind == "Stromlast":
+                return m_last_series, ref["load"]
+            if kind == "EE (Wind+Solar+Hydro)":
+                m = m_hourly[[c for c in ee_c if c in m_hourly]].sum(axis=1)
+                r = r_hourly[[c for c in ee_c if c in r_hourly]].sum(axis=1)
+                return m, r
+            z = pd.Series(0., index=m_hourly.index)
+            m = m_hourly[kind] if kind in m_hourly else z
+            r = r_hourly[kind] if kind in r_hourly else pd.Series(0., index=r_hourly.index)
+            return m, r
+
+        m_s, r_s = _series(auswahl)
+        ov = pd.DataFrame({
+            "5-Zonen-Modell": m_s.iloc[sl].to_numpy() / 1000.,
+            f"Referenz {jahr}": r_s.iloc[sl].to_numpy() / 1000.,
+        }, index=m_hourly.index[sl])
+        figo = px.line(ov, labels={"value": "GW", "index": "", "snapshot": ""},
+                       color_discrete_map={"5-Zonen-Modell": "#4A90D9",
+                                           f"Referenz {jahr}": "#E8734C"})
+        st.plotly_chart(figo, width="stretch")
+        st.caption("Beide Modelle nutzen unterschiedliche Wetterjahre – die "
+                   "Kurven sind positionsweise über die **Stunde des Jahres** "
+                   "gelegt, nicht über das Kalenderdatum.")
 
 # ── Monte-Carlo ───────────────────────────────────────────────────────
 with tab_mc:

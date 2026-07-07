@@ -208,3 +208,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Lokale Sicherungskopien & Tool-/Editor-Konfiguration (nicht versionieren)
+Backup/
+.claude/
+
+# Referenz-Rohdaten (lokal vorhalten, nicht auf GitHub)
+Produktionsdaten für PyPSA.xlsx
+*.xlsx
