@@ -1,0 +1,17 @@
+# Abhängigkeiten für Streamlit Community Cloud / frische Installationen.
+# Installieren:  pip install -r requirements.txt
+#
+# Hinweis: gurobipy (Lizenz nötig) und atlite (ERA5-Wetter, sehr schwer) sind
+# bewusst NICHT enthalten – das Modell fällt ohne sie automatisch auf HiGHS als
+# Solver bzw. auf synthetische Wetterprofile zurück. Wer echte ERA5-Daten oder
+# Gurobi nutzen will, installiert diese zusätzlich lokal.
+
+streamlit
+plotly
+pandas
+numpy
+matplotlib
+scipy
+pypsa
+highspy
+openpyxl
