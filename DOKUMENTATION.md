@@ -1,6 +1,6 @@
 # 📘 Dokumentation – Deutschland Energy Model
 
-> **Stand:** 08.07.2026 · **Version:** v1.0
+> **Stand:** 08.07.2026 · **Version:** v1.1 (europäische Kopplung)
 > Diese Datei erklärt die beiden Kern-Skripte des Projekts und die wichtigsten
 > Funktionen & Formeln. Sie wird bei Änderungen am Code mitgepflegt.
 >
@@ -19,6 +19,7 @@
 6. [Formelsammlung (Kurzreferenz)](#6-formelsammlung-kurzreferenz)
 7. [Häufige Fragen / Troubleshooting](#7-häufige-fragen--troubleshooting)
 8. [Deployment (Streamlit Cloud) & Secrets](#8-deployment-streamlit-cloud--secrets)
+9. [Europäische Kopplung (Nachbarländer)](#9-europäische-kopplung-nachbarländer)
 
 ---
 
@@ -260,6 +261,59 @@ Zufall.
 > Turbinen-/Panel-Kennlinien einen **Kapazitätsfaktor** → der Solver entscheidet, wie
 > viel Kapazität sich lohnt und wie sie stündlich eingesetzt wird.
 
+### 3.10 Unter der Haube ③ – Wie die Monte-Carlo-Analyse funktioniert
+
+Ein einzelner Modelllauf nutzt **ein** Wetterjahr. Aber Wind- und Solarangebot
+schwanken von Jahr zu Jahr stark – ein in einem windreichen Jahr optimales System kann
+in einem Dunkelflauten-Jahr teuer werden. Die **Monte-Carlo-Analyse**
+(`run_monte_carlo()`) prüft deshalb, wie **robust** die Ergebnisse gegenüber der
+Wettervariabilität sind.
+
+**Das Prinzip:** Statt einmal zu rechnen, wird das komplette Modell **N-mal** gelöst –
+jedes Mal mit einem anderen, zufällig erzeugten „Wetterjahr" – und die Kennzahlen
+werden gesammelt. Aus der Streuung dieser N Läufe entsteht ein Bild der Unsicherheit.
+
+```python
+for i in range(n_mc):                       # N Wetterjahre
+    prof  = make_profiles(mc_seed=i)        # (1) zufälliges Wetter je Jahr
+    loads = make_loads(mc_seed=i)           # (2) ±5 % zufällige Nachfrage
+    nm = build_network(prof, loads, …)      # (3) Modell neu bauen
+    solve_network(nm)                        # (4) neu optimieren
+    → sammle Kosten, CO₂, EE-Anteil          # (5) Kennzahlen ablegen
+```
+
+**Was von Lauf zu Lauf variiert:**
+1. **Wetter** – `make_profiles(mc_seed=i)` erzeugt über den Startwert (Seed) `i`
+   andere synthetische Wind-/Solar-/Offshore-Profile (Jahres- und Tagesgang plus
+   Zufall). Jedes `i` = ein anderes plausibles Wetterjahr.
+2. **Nachfrage** – `make_loads(mc_seed=i)` skaliert Strom- und Wärmelast um jeweils
+   **±5 %** zufällig (`1 + U(−0.05, 0.05)`).
+3. CO₂-Budget und CO₂-Preis bleiben **fest** (aus der Sidebar) – variiert wird nur die
+   „Natur", nicht die Politik.
+
+**Reproduzierbar:** Die Seeds sind deterministisch aus `i` abgeleitet
+(`_synthetic_base(i·17+3, …)`), d. h. dieselbe Anzahl Jahre liefert **immer dieselben**
+Ergebnisse – gut für eine nachvollziehbare Beleg-/Forschungsarbeit.
+
+**Was ausgewertet wird:** Pro Jahr werden **Gesamtkosten**, **CO₂** und **EE-Anteil**
+in eine Tabelle geschrieben (fehlgeschlagene Läufe → `NaN` mit Fehlerstatus). Der
+Monte-Carlo-Tab zeigt daraus **Mittelwert ± Standardabweichung** und die Kosten je
+Jahr. Interpretation: **große Streuung = wetterempfindliches System**, kleine Streuung
+= robuste Auslegung.
+
+> ⚠️ **Ehrliche Einordnung (wichtig fürs Verständnis):**
+> - Es wird **synthetisches** Wetter gewürfelt, **nicht** aus historischen ERA5-Jahren
+>   gezogen – die Bandbreite ist plausibel, aber nicht empirisch kalibriert.
+> - In **jedem** Jahr wird der Kapazitätsausbau **neu optimiert** (Greenfield). Die
+>   Analyse misst also die Streuung des *jeweils optimalen* Systems über Wetterjahre –
+>   **nicht**, wie gut *ein fest gebautes* System viele Jahre übersteht. Ein echter
+>   „Robustheitstest einer Auslegung" würde die Kapazitäten fixieren und nur das Wetter
+>   variieren (mögliche Ausbaustufe).
+> - Jeder Lauf hat **perfekte Voraussicht** über sein Jahr (wie das Grundmodell).
+
+> 💡 **Rechenzeit:** N Jahre = N komplette Optimierungen. Der Slider erlaubt bis 60 –
+> für einen schnellen Eindruck 5–10 nehmen.
+
 ---
 
 ## 4. `deutschland_gui.py` – Das Dashboard
@@ -468,6 +522,63 @@ aus `Referenzdaten/` geladen – kein Upload nötig.
 | **Docker-Container** | Reproduzierbarer Betrieb (App + Abhängigkeiten paketiert) – gut für Forschung/Server. |
 | **Eigener Server / VPS** | Dauerbetrieb, mehr RAM/CPU für schwere Läufe. |
 | **`start_app.bat`-Launcher** | Lokale „Doppelklick"-Weitergabe ohne echte EXE (startet venv + `streamlit run`). |
+
+---
+
+## 9. Europäische Kopplung (Nachbarländer)
+
+Optional lassen sich **11 Nachbarländer** als je **ein Knoten** ankoppeln
+(Sidebar → 🌍 Europa → *Nachbarländer koppeln*). So werden **Import/Export**,
+realistischere Preise und Grenzengpässe abbildbar. Aktiviert wird das über
+`run_base(..., include_neighbors=True)` bzw. `build_network(..., include_neighbors=True)`.
+
+### 9.1 Modellierungsansatz
+
+| Aspekt | Umsetzung |
+|---|---|
+| **Länder** | FR, BE, LU, NL, DK, PL, CZ, AT, CH, SE, NO – je 1 AC-Knoten |
+| **Erzeugung** | feste Flotte je Land (nuclear, lignite, hardcoal, gas, oil, hydro, wind, solar, biomass) – **nicht** erweiterbar |
+| **Last** | Jahresverbrauch je Land, zeitliche Form aus der DE-Last abgeleitet |
+| **Kuppelstellen** | `Link` DE-Zone ↔ Land mit **NTC**-Grenze (bidirektional). Bewusst `Link` statt `Line`, damit Karte/Engpässe-Tab DE-intern bleiben |
+| **Ausbau** | **nur Deutschland** optimiert Zubau; Nachbarn sind Randbedingung |
+| **CO₂-Budget** | gilt **nur für DE** (Custom-Constraint `co2_limit_DE` via `extra_functionality`); der CO₂-Preis (EU-ETS) wirkt dagegen **überall** |
+| **Backup/VoLL** | je Auslandsknoten ein teurer Reserve-Generator (3000 €/MWh) → garantiert lösbar |
+
+Die Daten stehen im `NEIGHBORS`-Dict in `deutschland_v1.py`
+(Koordinaten, `demand_twh`, `zone`, `ntc`, `fleet`, `wind_k`/`solar_k`).
+
+### 9.2 Was sich an den Kennzahlen ändert
+
+- **Erzeugungs-KPIs** (CO₂, EE-Anteil, Erzeugung) werden auf **deutsche Knoten
+  gefiltert** (`total_co2(net, DE_AC_BUSES)`, `re_share(net, DE_AC_BUSES)`,
+  `model_energy_by_carrier`), damit sie nicht mit dem Ausland vermischt werden.
+- **Gesamtkosten** = `total_cost(net)` = `objective + objective_constant`. Bei
+  Kopplung umfasst das das **gesamte** gekoppelte System (DE + Nachbarn).
+- Neuer Tab **🌍 Nachbarn**: Netto-Import DE, Jahresbilanz je Land und der
+  Kuppelstellen-Fluss über eine Woche.
+
+> ⚠️ **Wichtige Korrektur an „Gesamtkosten" (betrifft auch den Solo-DE-Lauf):**
+> PyPSA trennt die Zielfunktion in `objective` (variabel) und `objective_constant`
+> (Fixkosten der Bestandskapazität). Früher zeigte die GUI nur `objective` – der
+> **konstante** Teil (~18 Mrd €/a Bestandskapazität) fehlte. Jetzt wird konsistent
+> `total_cost = objective + objective_constant` verwendet. Dadurch steigt die
+> angezeigte „Gesamtkosten"-Zahl auch **ohne** Nachbarn – das ist die **korrektere**
+> Gesamtsystemkosten-Angabe, kein Fehler.
+
+### 9.3 Ehrliche Einordnung (für Review/Beleg)
+
+- **Datenbasis** der Nachbarn: grobe, **literaturbasierte ~2023-Näherung**
+  (installierte Leistung, Verbrauch, NTC). Für belastbare Studien durch
+  **ENTSO-E**-/**PyPSA-Eur**-Daten ersetzen.
+- **Wetter im Ausland** ist **synthetisch** (länderspezifisch skaliert), nicht ERA5.
+- **Nachbarn ohne Ausbau, ohne Speicher/Sektorkopplung** – reine Randbedingung.
+- **Auslandshydro** vereinfacht als flache Verfügbarkeit (`p_max_pu`), Kernkraft als
+  Baseload (`p_max_pu≈0.9`).
+- **Rechenlast** steigt (mehr Knoten/Variablen) – mit Gurobi unkritisch, für HiGHS
+  ggf. `TIME_RES` erhöhen.
+
+> **Mögliche nächste Ausbaustufen:** echte ENTSO-E-Kapazitäten/NTC, ERA5-Wetter je
+> Land, Speicher/Pumpspeicher im Ausland, mehrere Gebotszonen (z. B. DK1/DK2, NO2/NO5).
 
 ---
 

@@ -154,6 +154,69 @@ ERA5_BOXES = {
     "Offshore": ( 6.0,  8.0, 54.0, 55.5),
 }
 
+# Deutsche AC-Knoten (für DE-gefilterte Kennzahlen & CO₂-Budget)
+DE_AC_BUSES = list(REGIONS) + ["Offshore"]
+
+# =============================================================
+#  2b) NACHBARLÄNDER (Ein-Knoten-Kopplung, „High-Complexity")
+# =============================================================
+#  Jedes Nachbarland = 1 AC-Knoten mit fester Erzeugungsflotte, Last und
+#  einer Kuppelstelle (Link) zu einer deutschen Zone (NTC = Net Transfer
+#  Capacity). Nachbarn werden NICHT ausgebaut (Randbedingung); nur Deutschland
+#  optimiert Zubau. Das CO₂-Budget gilt nur für Deutschland, der CO₂-Preis
+#  (EU-ETS) wirkt überall.
+#
+#  ⚠ Datenbasis: grobe, literaturbasierte Näherung (~2023) – installierte
+#     Leistung [MW], Jahresverbrauch [TWh], NTC [MW]. Für belastbare Studien
+#     durch ENTSO-E-/PyPSA-Eur-Werte ersetzen.
+#
+#  fleet-Schlüssel → Modell-Carrier: nuclear, lignite, hardcoal, gas, oil,
+#     hydro, wind, solar, biomass.  wind_k/solar_k = länderspezifische
+#     Skalierung der Kapazitätsfaktoren (Küste = mehr Wind, Süden = mehr Sonne).
+NEIGHBORS = {
+    "FR": dict(x= 2.3, y=48.9, demand_twh=445, zone="West", ntc=4800,
+               wind_k=0.95, solar_k=1.05,
+               fleet=dict(nuclear=61000, gas=12000, hardcoal=1800, oil=3000,
+                          hydro=25700, wind=21000, solar=17000, biomass=2000)),
+    "BE": dict(x= 4.4, y=50.8, demand_twh= 82, zone="West", ntc=1000,
+               wind_k=1.00, solar_k=1.00,
+               fleet=dict(nuclear=3900, gas=7000, oil=200, hydro=1400,
+                          wind=5000, solar=8000, biomass=1000)),
+    "LU": dict(x= 6.1, y=49.8, demand_twh=  6.5, zone="West", ntc=2300,
+               wind_k=0.80, solar_k=0.95,
+               fleet=dict(gas=300, hydro=1300, wind=400, solar=300, biomass=100)),
+    "NL": dict(x= 5.3, y=52.1, demand_twh=113, zone="West", ntc=5000,
+               wind_k=1.05, solar_k=1.00,
+               fleet=dict(gas=20000, hardcoal=4000, nuclear=500, wind=8500,
+                          solar=22000, biomass=5000, hydro=40)),
+    "DK": dict(x= 9.5, y=56.0, demand_twh= 36, zone="Nord", ntc=2500,
+               wind_k=1.15, solar_k=0.95,
+               fleet=dict(wind=6300, solar=3300, gas=800, oil=500,
+                          biomass=2200, hardcoal=1000)),
+    "PL": dict(x=19.1, y=52.2, demand_twh=170, zone="Ost", ntc=3000,
+               wind_k=0.95, solar_k=0.95,
+               fleet=dict(hardcoal=24000, lignite=8000, gas=3500, wind=9000,
+                          solar=12000, biomass=1500, hydro=2400)),
+    "CZ": dict(x=14.4, y=50.1, demand_twh= 62, zone="Ost", ntc=2500,
+               wind_k=0.80, solar_k=0.95,
+               fleet=dict(nuclear=4000, lignite=8000, hardcoal=1500, gas=1200,
+                          hydro=2200, solar=2200, wind=340, biomass=400)),
+    "AT": dict(x=14.5, y=47.6, demand_twh= 70, zone="Sued", ntc=5400,
+               wind_k=0.85, solar_k=1.00,
+               fleet=dict(hydro=15000, gas=4000, wind=3700, solar=3800,
+                          biomass=700)),
+    "CH": dict(x= 8.2, y=46.8, demand_twh= 58, zone="Sued", ntc=4000,
+               wind_k=0.60, solar_k=1.05,
+               fleet=dict(hydro=15500, nuclear=3000, solar=4700, gas=300)),
+    "SE": dict(x=15.0, y=59.0, demand_twh=135, zone="Nord", ntc=615,
+               wind_k=1.00, solar_k=0.80,
+               fleet=dict(hydro=16300, nuclear=6900, wind=12000, solar=1600,
+                          biomass=4000)),
+    "NO": dict(x= 9.0, y=60.5, demand_twh=140, zone="Nord", ntc=1400,
+               wind_k=1.05, solar_k=0.75,
+               fleet=dict(hydro=33000, wind=5100, solar=300)),
+}
+
 # =============================================================
 #  3) ANNUITÄTEN & KOSTEN
 # =============================================================
@@ -186,6 +249,9 @@ def opex(co2_price: float = CO2_PRICE, gas_price: float = 55.0) -> dict[str, flo
         "Lignite":   28. + 1.000 * co2_price,
         "Hardcoal":  40. + 0.800 * co2_price,
         "Battery": 0.5, "H2_elec": 1., "H2_FC": 2., "HeatPump": 1.,
+        # Zusätzliche Träger der Nachbarländer (EU-ETS-Preis wirkt auch hier):
+        "Nuclear": 9., "Biomass": 45., "Oil": 150. + 0.650 * co2_price,
+        "Backup": 3000.,            # Lastabwurf/Import-Notreserve (VoLL)
     }
 
 # =============================================================
@@ -238,6 +304,8 @@ def make_profiles(mc_seed: int | None = None) -> tuple[dict, bool]:
     mc_seed=None → ERA5 falls verfügbar, sonst synthetisch.
     mc_seed=i    → synthetisches Monte-Carlo-Wetterjahr i."""
     prof: dict[str, np.ndarray] = {}
+    i = 0 if mc_seed is None else mc_seed
+    era5_ok = False
     if mc_seed is None and ATLITE_AVAILABLE:
         try:
             print("[atlite] Lade ERA5-Daten für 5 deutsche Regionen …")
@@ -246,20 +314,29 @@ def make_profiles(mc_seed: int | None = None) -> tuple[dict, bool]:
                 prof[f"wind_{reg}"], prof[f"solar_{reg}"] = w, s
             prof["wind_Offshore"], _ = _era5_region(ERA5_BOXES["Offshore"], need_pv=False)
             print("✓ ERA5-Daten geladen")
-            return prof, True
+            era5_ok = True
         except Exception as e:
             print(f"[atlite] Fehler: {e} → synthetischer Fallback")
-    i = 0 if mc_seed is None else mc_seed
-    s, w, wo = _synthetic_base(i * 17 + 3, i * 31 + 7, i * 17 + 102)
-    prof["wind_Offshore"] = wo
-    # Regionale Charakteristik: Nord windig, Süd sonnig
-    for reg, (wsc, wsh, ssc, ssh) in {
-        "Nord": (1.00, 0, 0.85, 0), "Ost":  (0.85, 2, 0.95, 1),
-        "West": (0.75, 4, 0.90, 1), "Sued": (0.65, 6, 1.10, 2),
-    }.items():
-        prof[f"wind_{reg}"]  = _shift_profile(w, wsh, wsc, 0.05, seed=i * 7 + wsh)
-        prof[f"solar_{reg}"] = _shift_profile(s, ssh, ssc, 0.04, seed=i * 7 + 50 + ssh)
-    return prof, False
+    if not era5_ok:
+        s, w, wo = _synthetic_base(i * 17 + 3, i * 31 + 7, i * 17 + 102)
+        prof["wind_Offshore"] = wo
+        # Regionale Charakteristik: Nord windig, Süd sonnig
+        for reg, (wsc, wsh, ssc, ssh) in {
+            "Nord": (1.00, 0, 0.85, 0), "Ost":  (0.85, 2, 0.95, 1),
+            "West": (0.75, 4, 0.90, 1), "Sued": (0.65, 6, 1.10, 2),
+        }.items():
+            prof[f"wind_{reg}"]  = _shift_profile(w, wsh, wsc, 0.05, seed=i * 7 + wsh)
+            prof[f"solar_{reg}"] = _shift_profile(s, ssh, ssc, 0.04, seed=i * 7 + 50 + ssh)
+
+    # Nachbarländer immer synthetisch (ERA5 je Land wäre zu schwer) – eigene
+    # Basis, länderspezifisch skaliert/zeitversetzt (Küste = mehr Wind usw.).
+    sN, wN, _ = _synthetic_base(i * 17 + 5, i * 31 + 11, i * 17 + 103)
+    for k, (cc, d) in enumerate(NEIGHBORS.items()):
+        prof[f"wind_{cc}"]  = _shift_profile(wN, shift=k % 8, scale=d["wind_k"],
+                                             noise=0.05, seed=i * 7 + 200 + k)
+        prof[f"solar_{cc}"] = _shift_profile(sN, shift=k % 4, scale=d["solar_k"],
+                                             noise=0.04, seed=i * 7 + 300 + k)
+    return prof, era5_ok
 
 def make_loads(load_scale=1.0, heat_scale=1.0, mc_seed=None) -> dict[str, np.ndarray]:
     """Strom- und Wärmelastprofile je Region [MW]."""
@@ -303,8 +380,10 @@ def _style_ax(ax, title, xlabel="", ylabel="", bg_inner="#1a2a3a"):
 def build_network(prof: dict, loads: dict,
                   co2_budget: float = CO2_BUDGET,
                   co2_price: float = CO2_PRICE,
-                  gas_price: float = 55.0) -> "pypsa.Network":
-    """Baut das 5-Zonen-Deutschland-Netz mit Sektorkopplung."""
+                  gas_price: float = 55.0,
+                  include_neighbors: bool = False) -> "pypsa.Network":
+    """Baut das 5-Zonen-Deutschland-Netz mit Sektorkopplung.
+    include_neighbors=True koppelt zusätzlich die Nachbarländer (je 1 Knoten)."""
     OP = opex(co2_price, gas_price)
     net = pypsa.Network()
     net.set_snapshots(snapshots)
@@ -312,7 +391,9 @@ def build_network(prof: dict, loads: dict,
 
     for c, co2 in [("wind", 0.), ("solar", 0.), ("hydro", 0.), ("gas", 0.370),
                    ("lignite", 1.0), ("hardcoal", 0.8),
-                   ("battery", 0.), ("H2", 0.), ("AC", 0.), ("heat", 0.)]:
+                   ("battery", 0.), ("H2", 0.), ("AC", 0.), ("heat", 0.),
+                   ("nuclear", 0.), ("biomass", 0.), ("oil", 0.65),
+                   ("backup", 0.)]:
         net.add("Carrier", c, co2_emissions=co2)
 
     for b, (x, y, _, _) in REGIONS.items():
@@ -404,8 +485,58 @@ def build_network(prof: dict, loads: dict,
         net.add("Load", f"Waerme_Last_{reg}", bus=f"Waerme_{reg}",
                 p_set=pd.Series(loads[f"heat_{reg}"], index=snapshots))
 
-    net.add("GlobalConstraint", "co2_limit", sense="<=",
-            carrier_attribute="co2_emissions", constant=co2_budget)
+    # ── Nachbarländer (je 1 Knoten, feste Flotte, Kuppel-Link) ───
+    if include_neighbors:
+        # Zeitliche Lastform aus DE ableiten und je Land auf den Jahres-
+        # verbrauch skalieren (Vereinfachung: gleiche Kurvenform wie DE).
+        de_shape = sum(loads[f"load_{r}"] for r in REGIONS)
+        de_shape = de_shape / de_shape.mean()          # Mittelwert = 1
+        # fleet-Schlüssel → (Carrier, opex-Schlüssel, p_max_pu)
+        _FLEET = {
+            "nuclear":  ("nuclear",  "Nuclear",  0.90),
+            "lignite":  ("lignite",  "Lignite",  1.00),
+            "hardcoal": ("hardcoal", "Hardcoal", 1.00),
+            "gas":      ("gas",      "Gas_CCGT", 1.00),
+            "oil":      ("oil",      "Oil",      1.00),
+            "biomass":  ("biomass",  "Biomass",  1.00),
+            "hydro":    ("hydro",    "Hydro",    0.50),
+        }
+        for cc, d in NEIGHBORS.items():
+            net.add("Bus", cc, v_nom=380., carrier="AC", x=d["x"], y=d["y"])
+            avg_mw = d["demand_twh"] * 1e6 / (HOURS * TIME_RES)
+            net.add("Load", f"Last_{cc}", bus=cc,
+                    p_set=pd.Series(de_shape * avg_mw, index=snapshots))
+            for tech, cap in d["fleet"].items():
+                if cap <= 0:
+                    continue
+                if tech == "wind":
+                    net.add("Generator", f"{cc}_wind", bus=cc, carrier="wind",
+                            p_nom=cap, marginal_cost=OP["Wind_on"],
+                            p_max_pu=pd.Series(prof[f"wind_{cc}"], index=snapshots))
+                elif tech == "solar":
+                    net.add("Generator", f"{cc}_solar", bus=cc, carrier="solar",
+                            p_nom=cap, marginal_cost=OP["Solar"],
+                            p_max_pu=pd.Series(prof[f"solar_{cc}"], index=snapshots))
+                else:
+                    car, opk, pmax = _FLEET[tech]
+                    net.add("Generator", f"{cc}_{tech}", bus=cc, carrier=car,
+                            p_nom=cap, marginal_cost=OP[opk], p_max_pu=pmax)
+            # Backup/VoLL → garantiert lösbar (teure Import-/Lastabwurf-Reserve)
+            net.add("Generator", f"{cc}_backup", bus=cc, carrier="backup",
+                    p_nom=80_000., marginal_cost=OP["Backup"])
+            # Kuppelstelle (Link, bidirektional) DE-Zone ↔ Land, NTC-begrenzt
+            net.add("Link", f"IC_{cc}", bus0=d["zone"], bus1=cc,
+                    p_nom=d["ntc"], p_min_pu=-1.0, marginal_cost=0.01)
+
+    # ── CO₂-Budget ───────────────────────────────────────────
+    if include_neighbors:
+        # Budget nur für Deutschland (Custom-Constraint beim Solven), da die
+        # GlobalConstraint sonst auch die Auslandsemissionen begrenzen würde.
+        net._co2_budget_de = co2_budget
+        net._de_ac_buses = list(DE_AC_BUSES)
+    else:
+        net.add("GlobalConstraint", "co2_limit", sense="<=",
+                carrier_attribute="co2_emissions", constant=co2_budget)
 
     # Realistische Obergrenzen (verhindert Skalierungswarnungen)
     _P_MAX, _E_MAX = 250_000., 2_000_000.
@@ -452,13 +583,36 @@ def _assert_optimal(res) -> None:
             f"(z. B. HiGHS im Zeit-/Speicherlimit) oder unzulässig.")
 
 
+def _co2_de_extra(n, sns) -> None:
+    """Custom-Constraint: begrenzt die CO₂-Emissionen NUR der deutschen
+    Erzeuger auf das Budget (bei gekoppelten Nachbarländern). Wird als
+    extra_functionality an optimize() übergeben."""
+    import xarray as xr
+    budget = getattr(n, "_co2_budget_de", None)
+    if budget is None:
+        return
+    de_buses = getattr(n, "_de_ac_buses", [])
+    emis = n.generators.carrier.map(n.carriers.co2_emissions).fillna(0.)
+    gens = list(n.generators.index[n.generators.bus.isin(de_buses) & (emis > 0.)])
+    if not gens:
+        return
+    p = n.model["Generator-p"]
+    gdim = [d for d in p.dims if d != "snapshot"][0]   # Generator-Dimension
+    p = p.sel({gdim: gens})
+    f = xr.DataArray(emis[gens].to_numpy(), dims=gdim, coords={gdim: gens})
+    w = xr.DataArray(n.snapshot_weightings.generators.reindex(sns).to_numpy(),
+                     dims="snapshot", coords={"snapshot": list(sns)})
+    n.model.add_constraints((p * f * w).sum() <= budget, name="co2_limit_DE")
+
+
 def solve_network(net, verbose=True) -> bool:
     """Gurobi (falls lizensiert), sonst HiGHS. True = Gurobi verwendet.
     Prüft, dass die Lösung optimal ist – sonst Exception statt Müll-Plot."""
+    ef = _co2_de_extra if getattr(net, "_co2_budget_de", None) is not None else None
     if USE_GUROBI:
         try:
             res = net.optimize(solver_name="gurobi",
-                               assign_all_duals=True,
+                               assign_all_duals=True, extra_functionality=ef,
                                solver_options={"env": _get_gurobi_env(),
                                                "OutputFlag": int(verbose)})
             _assert_optimal(res)
@@ -466,25 +620,40 @@ def solve_network(net, verbose=True) -> bool:
         except Exception as e:
             print(f"  ⚠ Gurobi: {e} → HiGHS")
     res = net.optimize(solver_name="highs",
-                       assign_all_duals=True,
+                       assign_all_duals=True, extra_functionality=ef,
                        solver_options={"time_limit": 900})
     _assert_optimal(res)
     return False
 
-def total_co2(net) -> float:
-    """CO₂-Emissionen [t/a] des gelösten Netzes."""
+def total_co2(net, buses=None) -> float:
+    """CO₂-Emissionen [t/a]. buses=None → gesamtes Netz; sonst nur Erzeuger
+    an diesen Knoten (z. B. DE_AC_BUSES für Deutschland-only)."""
     try:
-        return float((net.generators_t.p
-                      * net.generators.carrier.map(net.carriers.co2_emissions)
+        g = net.generators
+        if buses is not None:
+            g = g[g.bus.isin(buses)]
+        p = net.generators_t.p[g.index]
+        return float((p * g.carrier.map(net.carriers.co2_emissions)
                       ).sum().sum() * TIME_RES)
     except (KeyError, AttributeError):
         return 0.0
 
-def re_share(net) -> float:
-    """EE-Anteil [%] an der Stromerzeugung."""
-    p = net.generators_t.p.sum()
-    ee = p[net.generators.carrier.isin(["wind", "solar", "hydro"])].sum()
+def re_share(net, buses=None) -> float:
+    """EE-Anteil [%] an der Stromerzeugung (optional auf Knoten gefiltert)."""
+    g = net.generators if buses is None else net.generators[net.generators.bus.isin(buses)]
+    p = net.generators_t.p[g.index].sum()
+    ee = p[g.carrier.isin(["wind", "solar", "hydro"])].sum()
     return 100. * ee / p.sum() if p.sum() > 0 else 0.
+
+def total_cost(net) -> float:
+    """Gesamte annualisierte Systemkosten [€/a].
+
+    PyPSA trennt die Zielfunktion in einen variablen Teil (`net.objective`)
+    und einen konstanten Teil (`net.objective_constant` = Fixkosten der
+    Bestandskapazität). Nur die Summe ergibt die realen Gesamtkosten – der
+    variable Teil allein kann sogar negativ sein (z. B. bei billigem Import
+    aus gekoppelten Nachbarländern)."""
+    return float(net.objective + getattr(net, "objective_constant", 0.0))
 
 # =============================================================
 #  6c) REFERENZ – EIN-KNOTEN-MODELL FÜR DEN VERGLEICH
@@ -632,15 +801,47 @@ def load_reference(sheet: str = "2007", source=None,
     )
 
 
+def de_generators(net) -> "pd.DataFrame":
+    """Nur die deutschen Erzeuger (an den DE-AC-Knoten) – blendet bei
+    gekoppelten Nachbarländern deren Anlagen aus."""
+    return net.generators[net.generators.bus.isin(DE_AC_BUSES)]
+
+
 def model_energy_by_carrier(net) -> pd.Series:
-    """Jahreserzeugung [TWh] je Träger des gelösten 5-Zonen-Modells."""
-    return (net.generators_t.p.T.groupby(net.generators.carrier).sum().T.sum()
-            * TIME_RES / 1e6)
+    """Jahreserzeugung [TWh] je Träger – nur Deutschland."""
+    g = de_generators(net)
+    p = net.generators_t.p[g.index]
+    return (p.T.groupby(g.carrier).sum().T.sum() * TIME_RES / 1e6)
 
 
 def model_gen_hourly(net) -> pd.DataFrame:
-    """Erzeugung [MW] je Träger, stündlich (für Zeitreihen-Overlay)."""
-    return net.generators_t.p.T.groupby(net.generators.carrier).sum().T
+    """Erzeugung [MW] je Träger, stündlich – nur Deutschland (für Overlay)."""
+    g = de_generators(net)
+    return net.generators_t.p[g.index].T.groupby(g.carrier).sum().T
+
+
+def has_neighbors(net) -> bool:
+    """True, wenn Nachbarländer gekoppelt sind (Kuppel-Links vorhanden)."""
+    return any(c.startswith("IC_") for c in net.links.index)
+
+
+def neighbor_flows(net) -> pd.DataFrame:
+    """Kuppelstellen-Flüsse [MW] je Nachbarland (Spalten = Länderkürzel).
+    Vorzeichen: + = Import nach DE, − = Export aus DE. Leer ohne Kopplung."""
+    ic = [c for c in net.links.index if c.startswith("IC_")]
+    if not ic:
+        return pd.DataFrame(index=net.snapshots)
+    imp = -net.links_t.p0[ic]                 # p0 = Export DE→Land → Import = −p0
+    imp.columns = [c[3:] for c in ic]         # "IC_FR" → "FR"
+    return imp
+
+
+def neighbor_net_import_twh(net) -> pd.Series:
+    """Netto-Import je Nachbarland [TWh/a]  (+ = DE importiert, − = exportiert)."""
+    f = neighbor_flows(net)
+    if f.empty:
+        return pd.Series(dtype=float)
+    return f.sum() * TIME_RES / 1e6
 
 
 # =============================================================
@@ -648,11 +849,13 @@ def model_gen_hourly(net) -> pd.DataFrame:
 # =============================================================
 def run_base(co2_budget=CO2_BUDGET, co2_price=CO2_PRICE,
              load_scale=1.0, heat_scale=1.0,
-             discount_rate=None, gas_price=55.0, verbose=True):
+             discount_rate=None, gas_price=55.0,
+             include_neighbors=False, verbose=True):
     """Baut, löst und liefert (Netz, ERA5-Flag).
 
-    discount_rate = WACC (z. B. 0.07); None → globaler Standard.
-    gas_price     = Gas-Brennstoffkosten [€/MWh_th]."""
+    discount_rate     = WACC (z. B. 0.07); None → globaler Standard.
+    gas_price         = Gas-Brennstoffkosten [€/MWh_th].
+    include_neighbors = Nachbarländer koppeln (je 1 Knoten)."""
     global DISCOUNT_RATE
     _prev_dr = DISCOUNT_RATE
     if discount_rate is not None:
@@ -660,7 +863,8 @@ def run_base(co2_budget=CO2_BUDGET, co2_price=CO2_PRICE,
     try:
         prof, era5_ok = make_profiles()
         loads = make_loads(load_scale, heat_scale)
-        net = build_network(prof, loads, co2_budget, co2_price, gas_price)
+        net = build_network(prof, loads, co2_budget, co2_price, gas_price,
+                            include_neighbors=include_neighbors)
         try:
             gur = solve_network(net, verbose)
         except Exception as e:
@@ -671,21 +875,25 @@ def run_base(co2_budget=CO2_BUDGET, co2_price=CO2_PRICE,
         DISCOUNT_RATE = _prev_dr   # globalen WACC wiederherstellen
     if verbose:
         print("✓ Gurobi" if gur else "✓ HiGHS",
-              f"| {net.objective/1e9:.2f} Mrd €/a | CO₂ {total_co2(net)/1e6:.1f} Mt")
+              f"| {total_cost(net)/1e9:.2f} Mrd €/a "
+              f"| CO₂(DE) {total_co2(net, DE_AC_BUSES)/1e6:.1f} Mt")
     return net, era5_ok
 
-def run_monte_carlo(n_mc=N_MC, co2_budget=CO2_BUDGET, co2_price=CO2_PRICE):
+def run_monte_carlo(n_mc=N_MC, co2_budget=CO2_BUDGET, co2_price=CO2_PRICE,
+                    include_neighbors=False):
     """MC über synthetische Wetterjahre → DataFrame."""
     rows = []
     for i in range(n_mc):
         try:
             prof, _ = make_profiles(mc_seed=i)
             loads = make_loads(mc_seed=i)
-            nm = build_network(prof, loads, co2_budget, co2_price)
+            nm = build_network(prof, loads, co2_budget, co2_price,
+                               include_neighbors=include_neighbors)
             solve_network(nm, verbose=False)
-            rows.append(dict(Jahr=i + 1, Kosten_MrdEa=nm.objective / 1e9,
-                             CO2_Mt=total_co2(nm) / 1e6,
-                             RE_Anteil_pct=re_share(nm), Status="✓ OK"))
+            rows.append(dict(Jahr=i + 1, Kosten_MrdEa=total_cost(nm) / 1e9,
+                             CO2_Mt=total_co2(nm, DE_AC_BUSES) / 1e6,
+                             RE_Anteil_pct=re_share(nm, DE_AC_BUSES),
+                             Status="✓ OK"))
             print(f"  MC {i+1}/{n_mc}: {rows[-1]['Kosten_MrdEa']:.2f} Mrd €/a "
                   f"| CO₂ {rows[-1]['CO2_Mt']:.1f} Mt | EE {rows[-1]['RE_Anteil_pct']:.1f}%")
         except Exception as e:

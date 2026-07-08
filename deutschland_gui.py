@@ -61,6 +61,13 @@ gas_price     = sb.slider("Gaspreis (€/MWh_th)", 10, 120, 55, step=5,
                           help="Brennstoffkosten Gas – verschiebt die Merit-Order "
                                "zwischen Gas, Kohle und Erneuerbaren")
 
+sb.subheader("🌍 Europa")
+include_neighbors = sb.checkbox("Nachbarländer koppeln", value=False,
+                                help="11 Nachbarländer (FR, BE, LU, NL, DK, PL, "
+                                     "CZ, AT, CH, SE, NO) als Ein-Knoten-Modelle "
+                                     "mit Import/Export. Nur DE baut aus; "
+                                     "CO₂-Budget gilt nur für DE.")
+
 sb.divider()
 n_mc   = sb.slider("Monte-Carlo Wetterjahre", 0, 60, 0,
                    help="0 = überspringen (schneller)")
@@ -76,17 +83,18 @@ sb.caption(f"Solver: {'Gurobi' if dm.USE_GUROBI else 'HiGHS'} · "
 @st.cache_resource(show_spinner="⏳ Optimiere Deutschland-Modell … "
                                 "(je nach Rechner 1–10 min)")
 def solve(co2_budget, co2_price, load_scale, heat_scale,
-          discount_rate, gas_price):
+          discount_rate, gas_price, include_neighbors):
     net, era5_ok = dm.run_base(co2_budget=co2_budget, co2_price=co2_price,
                                load_scale=load_scale, heat_scale=heat_scale,
                                discount_rate=discount_rate, gas_price=gas_price,
-                               verbose=False)
+                               include_neighbors=include_neighbors, verbose=False)
     return net, era5_ok
 
 @st.cache_data(show_spinner="⏳ Monte-Carlo läuft …")
-def monte_carlo(n_mc, co2_budget, co2_price):
+def monte_carlo(n_mc, co2_budget, co2_price, include_neighbors):
     return dm.run_monte_carlo(n_mc=n_mc, co2_budget=co2_budget,
-                              co2_price=co2_price)
+                              co2_price=co2_price,
+                              include_neighbors=include_neighbors)
 
 @st.cache_data(show_spinner="⏳ Lade Referenzdaten (Ein-Knoten-Modell) …")
 def load_ref(sheet, upload_bytes=None, upload_name=None):
@@ -107,7 +115,8 @@ if not st.session_state.ran:
 try:
     n, era5_ok = solve(co2_budget_mt * 1e6, float(co2_price),
                        float(load_scale), float(heat_scale),
-                       float(discount_pct) / 100., float(gas_price))
+                       float(discount_pct) / 100., float(gas_price),
+                       bool(include_neighbors))
 except Exception as _solve_err:
     solve.clear()   # kaputtes/leeres Ergebnis nicht cachen
     st.error(f"❌ Optimierung nicht erfolgreich gelöst.\n\n{_solve_err}")
@@ -122,36 +131,44 @@ except Exception as _solve_err:
     st.stop()
 
 # ----------------------------------------------------------------------
-# KPI-Zeile
+# KPI-Zeile  (alle Erzeugungs-Kennzahlen auf Deutschland gefiltert)
 # ----------------------------------------------------------------------
-co2 = dm.total_co2(n) / 1e6
-ee  = dm.re_share(n)
+gekoppelt = dm.has_neighbors(n)
+co2 = dm.total_co2(n, dm.DE_AC_BUSES) / 1e6
+ee  = dm.re_share(n, dm.DE_AC_BUSES)
 preis = n.buses_t.marginal_price[list(dm.REGIONS)].mean().mean()
-erz_twh = n.generators_t.p.sum().sum() * dm.TIME_RES / 1e6
+erz_twh = float(dm.model_energy_by_carrier(n).sum())
 
 k1, k2, k3, k4, k5 = st.columns(5)
-k1.metric("Gesamtkosten", f"{n.objective/1e9:,.2f} Mrd €/a")
-k2.metric("Ø Strompreis", f"{preis:,.1f} €/MWh")
-k3.metric("CO₂-Emissionen", f"{co2:,.1f} Mt/a",
+k1.metric("Gesamtkosten", f"{dm.total_cost(n)/1e9:,.2f} Mrd €/a",
+          help="Annualisierte Systemkosten (variabler + konstanter Zielfunktions-"
+               "teil). Bei gekoppelten Nachbarn = Kosten des Gesamtsystems DE+Ausland.")
+k2.metric("Ø Strompreis DE", f"{preis:,.1f} €/MWh")
+k3.metric("CO₂-Emissionen DE", f"{co2:,.1f} Mt/a",
           delta=f"{co2 - co2_budget_mt:+.1f} vs. Budget", delta_color="inverse")
-k4.metric("EE-Anteil", f"{ee:,.1f} %")
-k5.metric("Erzeugung", f"{erz_twh:,.0f} TWh/a")
+k4.metric("EE-Anteil DE", f"{ee:,.1f} %")
+k5.metric("Erzeugung DE", f"{erz_twh:,.0f} TWh/a")
 if not era5_ok:
     st.caption("⚠ Synthetische Wetterdaten (atlite/ERA5 nicht verfügbar)")
+if gekoppelt:
+    st.caption("🌍 **Nachbarländer gekoppelt** – Erzeugungs-KPIs (CO₂, EE, "
+               "Erzeugung) zeigen **nur Deutschland**; die Gesamtkosten umfassen "
+               "das gekoppelte Gesamtsystem. Import/Export im Tab **🌍 Nachbarn**.")
 
 FARBEN = dm.CARRIER_COLORS
 
 (tab_disp, tab_kap, tab_preis, tab_spei, tab_karte, tab_eng,
- tab_vgl, tab_mc, tab_pdf) = st.tabs(
+ tab_vgl, tab_nb, tab_mc, tab_pdf) = st.tabs(
     ["📊 Dispatch", "🏗️ Kapazitäten", "💶 Preise", "🔋 Speicher & H₂",
-     "🗺️ Karte", "🚧 Engpässe", "⚖️ Vergleich", "🎲 Monte-Carlo", "📄 Bericht"])
+     "🗺️ Karte", "🚧 Engpässe", "⚖️ Vergleich", "🌍 Nachbarn",
+     "🎲 Monte-Carlo", "📄 Bericht"])
 
 # ── Dispatch ──────────────────────────────────────────────────────────
 with tab_disp:
     woche = st.select_slider("Woche im Jahr", options=list(range(1, 53)), value=2)
     steps = 7 * 24 // dm.TIME_RES
     sl = slice((woche - 1) * steps, woche * steps)
-    gen = n.generators_t.p.T.groupby(n.generators.carrier).sum().T.iloc[sl] / 1000.
+    gen = dm.model_gen_hourly(n).iloc[sl] / 1000.   # nur DE-Erzeuger
     fig = px.area(gen, color_discrete_map=FARBEN,
                   labels={"value": "Leistung (GW)", "snapshot": ""})
     last = n.loads_t.p_set[[f"Last_{r}" for r in dm.REGIONS]].sum(axis=1).iloc[sl] / 1000.
@@ -161,21 +178,24 @@ with tab_disp:
 
 # ── Kapazitäten ───────────────────────────────────────────────────────
 with tab_kap:
+    if gekoppelt:
+        st.caption("Nur **deutsche** Erzeuger (Nachbarländer sind feste "
+                   "Randbedingung, kein Ausbau).")
+    deg = dm.de_generators(n)
     c1, c2 = st.columns(2)
     caps = pd.DataFrame({
-        "Anlage": n.generators.index,
-        "Träger": n.generators.carrier.values,
-        "Start (GW)": n.generators.p_nom.values / 1000.,
+        "Anlage": deg.index,
+        "Träger": deg.carrier.values,
+        "Start (GW)": deg.p_nom.values / 1000.,
         "Optimiert (GW)": [dm._pnom(n.generators, g) / 1000.
-                           for g in n.generators.index]})
+                           for g in deg.index]})
     caps["Zubau (GW)"] = (caps["Optimiert (GW)"] - caps["Start (GW)"]).round(2)
     with c1:
         fig = px.bar(caps, x="Optimiert (GW)", y="Anlage", color="Träger",
                      orientation="h", color_discrete_map=FARBEN)
         st.plotly_chart(fig, width="stretch")
     with c2:
-        en = (n.generators_t.p.T.groupby(n.generators.carrier).sum().T.sum()
-              * dm.TIME_RES / 1e6)
+        en = dm.model_energy_by_carrier(n)
         st.plotly_chart(px.pie(values=en.values, names=en.index,
                                color=en.index, color_discrete_map=FARBEN,
                                title="Jahreserzeugung (TWh)"),
@@ -456,13 +476,51 @@ with tab_vgl:
                    "Kurven sind positionsweise über die **Stunde des Jahres** "
                    "gelegt, nicht über das Kalenderdatum.")
 
+# ── Nachbarländer: Import / Export ────────────────────────────────────
+with tab_nb:
+    st.subheader("🌍 Grenzüberschreitender Handel mit den Nachbarländern")
+    if not gekoppelt:
+        st.info("Nachbarländer sind nicht gekoppelt. In der Sidebar unter "
+                "**🌍 Europa** die Option **Nachbarländer koppeln** aktivieren "
+                "und erneut optimieren.")
+    else:
+        imp = dm.neighbor_flows(n)                    # MW, + = Import nach DE
+        netimp = dm.neighbor_net_import_twh(n)        # TWh/a je Land
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Netto-Import DE", f"{netimp.sum():,.1f} TWh/a",
+                  help="Summe über alle Grenzen (+ = Deutschland importiert netto)")
+        c2.metric("Import (Bezug)", f"{imp.clip(lower=0).sum().sum()*dm.TIME_RES/1e6:,.0f} TWh/a")
+        c3.metric("Export (Abgabe)", f"{-imp.clip(upper=0).sum().sum()*dm.TIME_RES/1e6:,.0f} TWh/a")
+
+        bilanz = pd.DataFrame({
+            "Land": netimp.index,
+            "Netto-Import (TWh/a)": netimp.values,
+        }).sort_values("Netto-Import (TWh/a)")
+        f1 = px.bar(bilanz, x="Netto-Import (TWh/a)", y="Land", orientation="h",
+                    color="Netto-Import (TWh/a)", color_continuous_scale="RdBu",
+                    title="Jahres-Nettobilanz je Land (+ Import / − Export)")
+        st.plotly_chart(f1, width="stretch")
+
+        st.markdown("##### Kuppelstellen-Fluss über eine Woche")
+        woche_nb = st.select_slider("Woche im Jahr", options=list(range(1, 53)),
+                                    value=2, key="woche_nachbarn")
+        steps = 7 * 24 // dm.TIME_RES
+        sl = slice((woche_nb - 1) * steps, woche_nb * steps)
+        f2 = px.line((imp.iloc[sl] / 1000.),
+                     labels={"value": "Import nach DE (GW)", "snapshot": ""})
+        st.plotly_chart(f2, width="stretch")
+        st.caption("Positiv = Deutschland importiert, negativ = Deutschland "
+                   "exportiert. Kapazität je Grenze ist die NTC (Net Transfer "
+                   "Capacity). ⚠ Nachbardaten sind grobe ~2023-Näherungen.")
+
 # ── Monte-Carlo ───────────────────────────────────────────────────────
 with tab_mc:
     if n_mc == 0:
         st.info("Monte-Carlo in der Sidebar aktivieren (Wetterjahre > 0) "
                 "und erneut optimieren.")
     else:
-        mc_df = monte_carlo(n_mc, co2_budget_mt * 1e6, float(co2_price))
+        mc_df = monte_carlo(n_mc, co2_budget_mt * 1e6, float(co2_price),
+                            bool(include_neighbors))
         st.dataframe(mc_df.round(2), width="stretch", hide_index=True)
         valid = mc_df.dropna()
         if not valid.empty:
@@ -490,9 +548,10 @@ with tab_pdf:
             dm.plot_capacities(n, pb)
             dm.plot_storage_prices(n, pc)
             dm.plot_map(n, pm, era5_ok)
-            mc_df = (monte_carlo(n_mc, co2_budget_mt * 1e6, float(co2_price))
+            mc_df = (monte_carlo(n_mc, co2_budget_mt * 1e6, float(co2_price),
+                                 bool(include_neighbors))
                      if n_mc > 0 else
-                     pd.DataFrame([dict(Jahr=1, Kosten_MrdEa=n.objective/1e9,
+                     pd.DataFrame([dict(Jahr=1, Kosten_MrdEa=dm.total_cost(n)/1e9,
                                         CO2_Mt=co2, RE_Anteil_pct=ee,
                                         Status="Basislauf")]))
             pdf_path = os.path.join(od, "Deutschland_v1_Bericht.pdf")
