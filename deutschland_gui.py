@@ -8,11 +8,23 @@
 #  (deutschland_v1.py muss im selben Ordner liegen)
 # =============================================================
 import os
+import io
 import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+
+# ── Streamlit-Cloud: Secrets als Umgebungsvariablen bereitstellen ─────
+#   Muss VOR dem Import von deutschland_v1 stehen, weil das Modell Keys
+#   (CDS_KEY, GRB_WLSACCESSID/-SECRET, GRB_LICENSEID) beim Import einliest.
+#   Lokal bleibt die .env unberührt (setdefault überschreibt nichts).
+try:
+    for _k, _v in dict(st.secrets).items():
+        if isinstance(_v, (str, int, float)):
+            os.environ.setdefault(str(_k), str(_v))
+except Exception:
+    pass   # keine secrets.toml vorhanden (lokaler Betrieb) → egal
 
 import deutschland_v1 as dm   # ← das komplette Modell als Modul
 
@@ -76,9 +88,13 @@ def monte_carlo(n_mc, co2_budget, co2_price):
     return dm.run_monte_carlo(n_mc=n_mc, co2_budget=co2_budget,
                               co2_price=co2_price)
 
-@st.cache_data(show_spinner="⏳ Lade Referenz-Excel (Ein-Knoten-Modell) …")
-def load_ref(sheet):
-    return dm.load_reference(sheet=sheet)
+@st.cache_data(show_spinner="⏳ Lade Referenzdaten (Ein-Knoten-Modell) …")
+def load_ref(sheet, upload_bytes=None, upload_name=None):
+    source = None
+    if upload_bytes is not None:
+        source = io.BytesIO(upload_bytes)
+        source.name = upload_name or f"referenz_{sheet}.csv"
+    return dm.load_reference(sheet=sheet, source=source)
 
 if "ran" not in st.session_state:
     st.session_state.ran = False
@@ -315,15 +331,23 @@ with tab_vgl:
                "Ein-Knoten-Deutschland-Modell aus der Excel "
                "(Dispatch-Zeitreihen, Verbrauch 2026, ERA5-Wetter 2007/2009).")
 
-    if not dm.reference_available():
-        st.warning(f"Referenz-Excel nicht gefunden unter "
-                   f"`{dm.REFERENCE_XLSX}`. Datei dort ablegen und Seite neu "
-                   f"laden.")
+    jahr = st.radio("Wetterjahr der Referenz", dm.REFERENCE_SHEETS,
+                    horizontal=True,
+                    help="ERA5-Wetterjahr des Ein-Knoten-Modells")
+    up = st.file_uploader(
+        "Referenzdaten hochladen (optional – CSV oder XLSX)",
+        type=["csv", "xlsx"], key="ref_upload",
+        help="Lokal werden die Daten automatisch aus dem Ordner "
+             "`Referenzdaten/` geladen. In der Cloud (kein lokaler Datenzugriff) "
+             "hier die passende Datei des gewählten Wetterjahres hochladen.")
+    if up is None and not dm.reference_available(jahr):
+        st.info("Keine lokalen Referenzdaten für dieses Wetterjahr gefunden. "
+                "Bitte oben die passende CSV/XLSX des Ein-Knoten-Modells "
+                "hochladen (z. B. `referenz_2007.csv`).")
     else:
-        jahr = st.radio("Wetterjahr der Referenz", dm.REFERENCE_SHEETS,
-                        horizontal=True,
-                        help="ERA5-Wetterjahr des Ein-Knoten-Modells")
-        ref = load_ref(jahr)
+        ref = load_ref(jahr,
+                       up.getvalue() if up is not None else None,
+                       up.name if up is not None else None)
         rk = ref["kpi"]
 
         # Modell-KPIs (aus dem gelösten Netz)

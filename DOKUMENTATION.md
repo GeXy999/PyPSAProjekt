@@ -18,6 +18,7 @@
 5. [Der Vergleich mit dem Ein-Knoten-Modell](#5-der-vergleich-mit-dem-ein-knoten-modell)
 6. [Formelsammlung (Kurzreferenz)](#6-formelsammlung-kurzreferenz)
 7. [Häufige Fragen / Troubleshooting](#7-häufige-fragen--troubleshooting)
+8. [Deployment (Streamlit Cloud) & Secrets](#8-deployment-streamlit-cloud--secrets)
 
 ---
 
@@ -316,9 +317,17 @@ das als Excel vorliegt.
 
 ### 5.1 Die Referenzdaten
 
-`Produktionsdaten für PyPSA.xlsx` enthält je Blatt (**Wetterjahr 2007 / 2009**,
-Verbrauchsjahr 2026) stündliche **Dispatch-Zeitreihen** [MW] je Technologie plus die
-Last. Die Datei wird nur **lokal** vorgehalten (nicht im Git-Repo).
+Die Referenz enthält je **Wetterjahr (2007 / 2009**, Verbrauchsjahr 2026) stündliche
+**Dispatch-Zeitreihen** [MW] je Technologie plus die Last. Die Daten werden **nicht im
+Git-Repo** abgelegt (Datenschutz/Rechte) und in dieser Reihenfolge gesucht:
+
+1. `Referenzdaten/referenz_<jahr>.csv` — schlanke CSV (bevorzugt, je ~1 MB)
+2. `Produktionsdaten für PyPSA.xlsx` — Original-Excel (Fallback)
+3. **Datei-Upload** in der App — für die Cloud, wo es keinen lokalen Datenzugriff gibt
+   (`st.file_uploader` im Vergleich-Tab, akzeptiert CSV **oder** XLSX)
+
+Die CSVs entstehen aus der Excel per `pandas.read_excel(...).to_csv(...)` (ein Blatt →
+eine Datei).
 
 ### 5.2 Träger-Mapping (`EXCEL_CARRIER_MAP`)
 
@@ -387,8 +396,78 @@ Last. Die Datei wird nur **lokal** vorgehalten (nicht im Git-Repo).
 | `ModuleNotFoundError: openpyxl` | Für den Excel-Import nötig: `pip install openpyxl` (steht in der Auto-Install-Liste). |
 | `StreamlitDuplicateElementId` | Zwei gleiche Widgets → einem ein `key="…"` geben. |
 | `did not find executable … python.exe` | `.venv\pyvenv.cfg` zeigt auf einen alten Profilpfad → Pfad dort korrigieren. |
-| Vergleich-Tab: „Referenz-Excel nicht gefunden" | `Produktionsdaten für PyPSA.xlsx` muss im Projektordner liegen. |
+| Vergleich-Tab: „Keine Referenzdaten gefunden" | CSV in `Referenzdaten/` legen **oder** in der App hochladen (CSV/XLSX). |
 | Optimierung dauert ewig | Monte-Carlo-Jahre reduzieren; jeder Lauf ist eine komplette Optimierung. |
+
+---
+
+## 8. Deployment (Streamlit Cloud) & Secrets
+
+Die App lässt sich über **Streamlit Community Cloud** direkt aus dem GitHub-Repo
+online stellen. Wichtig ist das Verständnis: **Die Cloud läuft auf fremden Servern und
+hat keinen Zugriff auf deinen PC** – also weder auf die lokale `.env`, lokale Dateien
+noch eine PC-gebundene Lizenz. Alles, was die App braucht, muss ihr auf einem der
+folgenden Wege bereitgestellt werden.
+
+### 8.1 Abhängigkeiten – `requirements.txt`
+
+Die Cloud installiert **ausschließlich** Pakete aus `requirements.txt`. Fehlt sie,
+scheitert der Start mit `ModuleNotFoundError` (z. B. `plotly`). Die Datei liegt im
+Repo-Wurzelverzeichnis; `gurobipy` ist enthalten (nur mit Lizenz aktiv), `atlite`
+bewusst **nicht** (ERA5-Download in der Cloud unpraktikabel → synthetisches Wetter).
+
+### 8.2 Geheimnisse – Streamlit Secrets
+
+API-Keys und Lizenzen gehören **nicht** ins Repo, sondern unter
+*Manage app → Settings → Secrets* (ein TOML-Feld). Beispiel:
+
+```toml
+# CDS / ERA5 (nur relevant, wenn atlite lokal genutzt wird)
+CDS_KEY = "dein-cds-key"
+
+# Gurobi WLS-Lizenz (Web License Service – funktioniert in der Cloud!)
+GRB_WLSACCESSID = "…"
+GRB_WLSSECRET   = "…"
+GRB_LICENSEID   = "1234567"
+```
+
+**Wie kommen die Secrets ins Modell?** `deutschland_v1.py` liest die Zugangsdaten aus
+Umgebungsvariablen (`os.getenv`). `deutschland_gui.py` spiegelt daher die Secrets
+**vor** dem Import des Modells nach `os.environ`:
+
+```python
+for _k, _v in dict(st.secrets).items():
+    if isinstance(_v, (str, int, float)):
+        os.environ.setdefault(str(_k), str(_v))
+```
+
+> Damit ist eine **Cloud-Lizenz** (Gurobi WLS) tatsächlich nutzbar – der Aufruf läuft
+> vom Cloud-Server, nicht von deinem PC. Ist kein Secret gesetzt, fällt das Modell
+> automatisch auf **HiGHS** zurück.
+
+### 8.3 Referenzdaten in der Cloud
+
+Der Datensatz (~2–3 MB als CSV) ist **zu groß für Secrets** (die sind für kleine
+Schlüssel gedacht). Da die Daten außerdem privat bleiben sollen, liegen sie **nicht**
+im Repo. In der Cloud stellt man sie deshalb über den **Datei-Upload** im Vergleich-Tab
+bereit (CSV oder XLSX, passend zum gewählten Wetterjahr). Lokal werden sie automatisch
+aus `Referenzdaten/` geladen – kein Upload nötig.
+
+### 8.4 Realistische Grenzen des kostenlosen Tiers
+
+- **Speicher/Zeit:** Der Free-Tier hat ~1 GB RAM. Eine volle stündliche
+  Jahresoptimierung – erst recht Monte-Carlo über viele Jahre – kann daran scheitern.
+  Für eine flüssige Online-Demo `TIME_RES` erhöhen (z. B. 3) → deutlich leichter.
+- **Python-Version:** Falls ein Paket beim Build fehlt, unter *Settings* eine
+  unterstützte Version wählen (z. B. 3.11/3.12; nicht 3.14).
+
+### 8.5 Alternativen
+
+| Weg | Wofür |
+|---|---|
+| **Docker-Container** | Reproduzierbarer Betrieb (App + Abhängigkeiten paketiert) – gut für Forschung/Server. |
+| **Eigener Server / VPS** | Dauerbetrieb, mehr RAM/CPU für schwere Läufe. |
+| **`start_app.bat`-Launcher** | Lokale „Doppelklick"-Weitergabe ohne echte EXE (startet venv + `streamlit run`). |
 
 ---
 

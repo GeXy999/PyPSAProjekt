@@ -463,13 +463,24 @@ def re_share(net) -> float:
     return 100. * ee / p.sum() if p.sum() > 0 else 0.
 
 # =============================================================
-#  6c) REFERENZ – EIN-KNOTEN-MODELL (Excel) FÜR DEN VERGLEICH
+#  6c) REFERENZ – EIN-KNOTEN-MODELL FÜR DEN VERGLEICH
 # =============================================================
-#  Die Excel enthält stündliche Dispatch-Zeitreihen (MW) je Technologie
-#  eines Ein-Knoten-Deutschland-Modells (Kupferplatte) für zwei Wetter-
-#  jahre (2007, 2009) bei Verbrauchsjahr 2026 – plus die Last.
+#  Referenz = stündliche Dispatch-Zeitreihen (MW) je Technologie eines
+#  Ein-Knoten-Deutschland-Modells (Kupferplatte) für zwei Wetterjahre
+#  (2007, 2009) bei Verbrauchsjahr 2026 – plus die Last.
+#
+#  Quellen (in dieser Reihenfolge gesucht):
+#    1) Referenzdaten/referenz_<jahr>.csv   (schlank, bevorzugt)
+#    2) Produktionsdaten für PyPSA.xlsx     (Original, Fallback)
+#    3) per Datei-Upload uebergeben         (fuer Streamlit Cloud)
+REFERENCE_DIR    = os.path.join(SCRIPT_DIR, "Referenzdaten")
 REFERENCE_XLSX   = os.path.join(SCRIPT_DIR, "Produktionsdaten für PyPSA.xlsx")
 REFERENCE_SHEETS = ["2007", "2009"]        # verfügbare Wetterjahre
+
+
+def reference_csv_path(sheet: str) -> str:
+    """Pfad zur CSV eines Wetterjahres (z. B. Referenzdaten/referenz_2007.csv)."""
+    return os.path.join(REFERENCE_DIR, f"referenz_{sheet}.csv")
 
 # Excel-Spalte → Modell-Träger (mehrere Excel-Spalten dürfen zusammenfallen)
 EXCEL_CARRIER_MAP = {
@@ -490,19 +501,46 @@ EXCEL_CO2 = {"gas": 0.370, "lignite": 1.0, "hardcoal": 0.8, "oil": 0.65}
 _RE_CARRIERS = ("wind", "solar", "hydro")
 
 
-def reference_available(path: str = REFERENCE_XLSX) -> bool:
-    """True, wenn die Referenz-Excel vorhanden ist."""
-    return os.path.exists(path)
+def reference_available(sheet: str | None = None) -> bool:
+    """True, wenn Referenzdaten lokal vorliegen (CSV oder Excel).
+    sheet=None → prüft, ob irgendein Wetterjahr verfügbar ist."""
+    sheets = REFERENCE_SHEETS if sheet is None else [sheet]
+    return (any(os.path.exists(reference_csv_path(s)) for s in sheets)
+            or os.path.exists(REFERENCE_XLSX))
 
 
-def load_reference(sheet: str = "2007", path: str = REFERENCE_XLSX,
+def _read_reference_raw(sheet: str, source=None) -> "pd.DataFrame":
+    """Liest die Roh-Zeitreihe eines Wetterjahres als DataFrame.
+
+    source=None          → lokale CSV, sonst Excel-Fallback.
+    source=Pfad/Datei    → hochgeladene bzw. angegebene CSV/XLSX
+                           (z. B. st.file_uploader in der Cloud)."""
+    if source is not None:
+        name = source if isinstance(source, str) else getattr(source, "name", "")
+        if str(name).lower().endswith(".xlsx"):
+            return pd.read_excel(source, sheet_name=sheet)
+        return pd.read_csv(source)
+    csv_p = reference_csv_path(sheet)
+    if os.path.exists(csv_p):
+        return pd.read_csv(csv_p)
+    if os.path.exists(REFERENCE_XLSX):
+        return pd.read_excel(REFERENCE_XLSX, sheet_name=sheet)
+    raise FileNotFoundError(
+        f"Keine Referenzdaten für Wetterjahr {sheet} gefunden "
+        f"(weder {csv_p} noch {REFERENCE_XLSX}).")
+
+
+def load_reference(sheet: str = "2007", source=None,
                    time_res: int | None = None,
                    index=None) -> dict:
-    """Lädt ein Wetterjahr-Blatt der Ein-Knoten-Referenz und bereitet es
-    zum Vergleich mit dem 5-Zonen-Modell auf.
+    """Lädt ein Wetterjahr der Ein-Knoten-Referenz und bereitet es zum
+    Vergleich mit dem 5-Zonen-Modell auf.
+
+    sheet   : Wetterjahr ("2007"/"2009").
+    source  : None → lokale CSV/Excel; sonst Pfad oder hochgeladene Datei.
 
     Rückgabe (dict):
-      sheet        : Blattname (Wetterjahr)
+      sheet        : Wetterjahr
       gen_hourly   : DataFrame – Erzeugung [MW] je Modell-Träger, auf die
                      Modell-Auflösung/-Snapshots ausgerichtet (für Overlay)
       load         : Series    – Stromlast [MW], gleiche Ausrichtung
@@ -513,7 +551,7 @@ def load_reference(sheet: str = "2007", path: str = REFERENCE_XLSX,
     tr = TIME_RES if time_res is None else time_res
     idx = snapshots if index is None else index
 
-    raw = pd.read_excel(path, sheet_name=sheet)
+    raw = _read_reference_raw(sheet, source)
     raw["dim_1"] = pd.to_datetime(raw["dim_1"])
     # Nur das Verbrauchsjahr 2026 (die 2 Vorlaufstunden aus Dez. 2025 weg)
     df = raw[raw["dim_1"].dt.year == 2026].sort_values("dim_1").reset_index(drop=True)
