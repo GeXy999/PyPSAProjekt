@@ -547,6 +547,17 @@ realistischere Preise und Grenzengpässe abbildbar. Aktiviert wird das über
 Die Daten stehen im `NEIGHBORS`-Dict in `deutschland_v1.py`
 (Koordinaten, `demand_twh`, `zone`, `ntc`, `fleet`, `wind_k`/`solar_k`).
 
+**Wetter im Ausland:** standardmäßig synthetisch (länderspezifisch skaliert).
+Optional per Sidebar-Schalter **Ausland: ERA5-Wetter** (`foreign_era5=True`) aus
+echten ERA5-Daten – je Land über `ERA5_BOXES_NEIGHBORS` und dieselbe
+`_era5_region()`-Funktion wie für DE. ⚠ Der erste Lauf lädt je Land via CDS herunter
+(dauert, nur lokal mit `atlite` + CDS-Key); pro Land automatischer synthetischer
+Fallback bei Fehler.
+
+**Karte:** Bei Kopplung erscheinen die Nachbarländer als graue Marker (Hover:
+installierte Leistung + Netto-Import), und die Kuppelstellen werden als gepunktete
+Linien mit Auslastungs-Ampel (grün/gelb/rot) gezeichnet.
+
 ### 9.2 Was sich an den Kennzahlen ändert
 
 - **Erzeugungs-KPIs** (CO₂, EE-Anteil, Erzeugung) werden auf **deutsche Knoten
@@ -570,7 +581,8 @@ Die Daten stehen im `NEIGHBORS`-Dict in `deutschland_v1.py`
 - **Datenbasis** der Nachbarn: grobe, **literaturbasierte ~2023-Näherung**
   (installierte Leistung, Verbrauch, NTC). Für belastbare Studien durch
   **ENTSO-E**-/**PyPSA-Eur**-Daten ersetzen.
-- **Wetter im Ausland** ist **synthetisch** (länderspezifisch skaliert), nicht ERA5.
+- **Wetter im Ausland**: standardmäßig **synthetisch**; optional **ERA5** per
+  Schalter (nur lokal, erster Lauf lädt via CDS).
 - **Nachbarn ohne Ausbau, ohne Speicher/Sektorkopplung** – reine Randbedingung.
 - **Auslandshydro** vereinfacht als flache Verfügbarkeit (`p_max_pu`), Kernkraft als
   Baseload (`p_max_pu≈0.9`).

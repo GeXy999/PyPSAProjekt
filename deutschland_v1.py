@@ -217,6 +217,18 @@ NEIGHBORS = {
                fleet=dict(hydro=33000, wind=5100, solar=300)),
 }
 
+# ERA5-Bounding-Boxen je Nachbarland: (x_min, x_max, y_min, y_max)
+# Optional – nur genutzt, wenn „Ausland: ERA5" aktiv ist (sonst synthetisch).
+# atlite lädt die Box beim ersten Mal via CDS herunter (kann dauern).
+ERA5_BOXES_NEIGHBORS = {
+    "FR": ( 0.0,  6.0, 44.0, 49.5), "BE": ( 3.0,  6.0, 50.0, 51.5),
+    "LU": ( 5.7,  6.5, 49.4, 50.2), "NL": ( 4.0,  7.0, 51.5, 53.5),
+    "DK": ( 8.0, 12.0, 55.0, 57.5), "PL": (15.0, 22.0, 51.0, 54.0),
+    "CZ": (13.0, 18.0, 49.0, 51.0), "AT": (10.0, 16.0, 46.5, 48.5),
+    "CH": ( 6.0, 10.0, 46.0, 47.5), "SE": (12.0, 18.0, 56.0, 60.0),
+    "NO": ( 6.0, 11.0, 58.0, 62.0),
+}
+
 # =============================================================
 #  3) ANNUITÄTEN & KOSTEN
 # =============================================================
@@ -299,10 +311,12 @@ def _era5_region(box, need_pv=True):
                             layout=cut.uniform_layout()).values.flatten(), 0, 1)
     return wind[::TIME_RES][:HOURS], (pv[::TIME_RES][:HOURS] if pv is not None else None)
 
-def make_profiles(mc_seed: int | None = None) -> tuple[dict, bool]:
+def make_profiles(mc_seed: int | None = None,
+                  foreign_era5: bool = False) -> tuple[dict, bool]:
     """Erzeugt Wetterprofile je Region.
-    mc_seed=None → ERA5 falls verfügbar, sonst synthetisch.
-    mc_seed=i    → synthetisches Monte-Carlo-Wetterjahr i."""
+    mc_seed=None  → ERA5 falls verfügbar, sonst synthetisch.
+    mc_seed=i     → synthetisches Monte-Carlo-Wetterjahr i.
+    foreign_era5  → Nachbarländer ebenfalls aus ERA5 (statt synthetisch)."""
     prof: dict[str, np.ndarray] = {}
     i = 0 if mc_seed is None else mc_seed
     era5_ok = False
@@ -328,10 +342,22 @@ def make_profiles(mc_seed: int | None = None) -> tuple[dict, bool]:
             prof[f"wind_{reg}"]  = _shift_profile(w, wsh, wsc, 0.05, seed=i * 7 + wsh)
             prof[f"solar_{reg}"] = _shift_profile(s, ssh, ssc, 0.04, seed=i * 7 + 50 + ssh)
 
-    # Nachbarländer immer synthetisch (ERA5 je Land wäre zu schwer) – eigene
-    # Basis, länderspezifisch skaliert/zeitversetzt (Küste = mehr Wind usw.).
+    # Nachbarländer: standardmäßig synthetisch (länderspezifisch skaliert/
+    # zeitversetzt). Mit foreign_era5=True je Land ERA5 laden (falls atlite +
+    # CDS verfügbar), sonst pro Land automatischer synthetischer Fallback.
     sN, wN, _ = _synthetic_base(i * 17 + 5, i * 31 + 11, i * 17 + 103)
+    use_foreign_era5 = foreign_era5 and mc_seed is None and ATLITE_AVAILABLE
+    if use_foreign_era5:
+        print("[atlite] Lade ERA5 für Nachbarländer (erster Lauf lädt via CDS) …")
     for k, (cc, d) in enumerate(NEIGHBORS.items()):
+        if use_foreign_era5 and cc in ERA5_BOXES_NEIGHBORS:
+            try:
+                w_cc, s_cc = _era5_region(ERA5_BOXES_NEIGHBORS[cc], need_pv=True)
+                prof[f"wind_{cc}"], prof[f"solar_{cc}"] = w_cc, s_cc
+                print(f"  ✓ ERA5 {cc}")
+                continue
+            except Exception as e:
+                print(f"  [atlite] {cc}: {e} → synthetisch")
         prof[f"wind_{cc}"]  = _shift_profile(wN, shift=k % 8, scale=d["wind_k"],
                                              noise=0.05, seed=i * 7 + 200 + k)
         prof[f"solar_{cc}"] = _shift_profile(sN, shift=k % 4, scale=d["solar_k"],
@@ -850,18 +876,19 @@ def neighbor_net_import_twh(net) -> pd.Series:
 def run_base(co2_budget=CO2_BUDGET, co2_price=CO2_PRICE,
              load_scale=1.0, heat_scale=1.0,
              discount_rate=None, gas_price=55.0,
-             include_neighbors=False, verbose=True):
+             include_neighbors=False, foreign_era5=False, verbose=True):
     """Baut, löst und liefert (Netz, ERA5-Flag).
 
     discount_rate     = WACC (z. B. 0.07); None → globaler Standard.
     gas_price         = Gas-Brennstoffkosten [€/MWh_th].
-    include_neighbors = Nachbarländer koppeln (je 1 Knoten)."""
+    include_neighbors = Nachbarländer koppeln (je 1 Knoten).
+    foreign_era5      = Auslandswetter aus ERA5 (statt synthetisch)."""
     global DISCOUNT_RATE
     _prev_dr = DISCOUNT_RATE
     if discount_rate is not None:
         DISCOUNT_RATE = float(discount_rate)
     try:
-        prof, era5_ok = make_profiles()
+        prof, era5_ok = make_profiles(foreign_era5=foreign_era5)
         loads = make_loads(load_scale, heat_scale)
         net = build_network(prof, loads, co2_budget, co2_price, gas_price,
                             include_neighbors=include_neighbors)

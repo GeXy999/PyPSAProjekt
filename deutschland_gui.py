@@ -67,6 +67,14 @@ include_neighbors = sb.checkbox("Nachbarländer koppeln", value=False,
                                      "CZ, AT, CH, SE, NO) als Ein-Knoten-Modelle "
                                      "mit Import/Export. Nur DE baut aus; "
                                      "CO₂-Budget gilt nur für DE.")
+foreign_era5 = sb.checkbox("Ausland: ERA5-Wetter", value=False,
+                           disabled=not include_neighbors,
+                           help="Auslandswetter aus echten ERA5-Daten statt "
+                                "synthetisch. ⚠ Erster Lauf lädt je Land via CDS "
+                                "herunter (dauert, nur lokal mit atlite+CDS-Key). "
+                                "Automatischer Fallback auf synthetisch.")
+if include_neighbors and foreign_era5 and not dm.ATLITE_AVAILABLE:
+    sb.caption("⚠ atlite nicht verfügbar → Ausland bleibt synthetisch.")
 
 sb.divider()
 n_mc   = sb.slider("Monte-Carlo Wetterjahre", 0, 60, 0,
@@ -83,11 +91,12 @@ sb.caption(f"Solver: {'Gurobi' if dm.USE_GUROBI else 'HiGHS'} · "
 @st.cache_resource(show_spinner="⏳ Optimiere Deutschland-Modell … "
                                 "(je nach Rechner 1–10 min)")
 def solve(co2_budget, co2_price, load_scale, heat_scale,
-          discount_rate, gas_price, include_neighbors):
+          discount_rate, gas_price, include_neighbors, foreign_era5):
     net, era5_ok = dm.run_base(co2_budget=co2_budget, co2_price=co2_price,
                                load_scale=load_scale, heat_scale=heat_scale,
                                discount_rate=discount_rate, gas_price=gas_price,
-                               include_neighbors=include_neighbors, verbose=False)
+                               include_neighbors=include_neighbors,
+                               foreign_era5=foreign_era5, verbose=False)
     return net, era5_ok
 
 @st.cache_data(show_spinner="⏳ Monte-Carlo läuft …")
@@ -116,7 +125,7 @@ try:
     n, era5_ok = solve(co2_budget_mt * 1e6, float(co2_price),
                        float(load_scale), float(heat_scale),
                        float(discount_pct) / 100., float(gas_price),
-                       bool(include_neighbors))
+                       bool(include_neighbors), bool(foreign_era5))
 except Exception as _solve_err:
     solve.clear()   # kaputtes/leeres Ergebnis nicht cachen
     st.error(f"❌ Optimierung nicht erfolgreich gelöst.\n\n{_solve_err}")
@@ -277,6 +286,37 @@ with tab_karte:
         marker=dict(size=16, color=["#00BCD4", "#E040FB", "#FF9800",
                                     "#8BC34A", "#4A90D9"]),
         name="Regionen"))
+
+    # Nachbarländer + Kuppelstellen (nur bei Kopplung)
+    if gekoppelt:
+        netimp = dm.neighbor_net_import_twh(n)
+        for lk in [c for c in n.links.index if c.startswith("IC_")]:
+            b0, b1 = n.links.at[lk, "bus0"], n.links.at[lk, "bus1"]
+            cap = float(n.links.at[lk, "p_nom"]) or 1.
+            pct = 100. * abs(n.links_t.p0[lk]).mean() / cap
+            clr = "#6bcb77" if pct < 50 else ("#ffd93d" if pct < 80 else "#ff6b6b")
+            fig.add_trace(go.Scattergeo(
+                lon=[n.buses.at[b0, "x"], n.buses.at[b1, "x"]],
+                lat=[n.buses.at[b0, "y"], n.buses.at[b1, "y"]],
+                mode="lines",
+                line=dict(width=max(1.5, cap / 2500), color=clr, dash="dot"),
+                name=f"{lk[3:]}: NTC {cap/1000:.1f} GW | {pct:.0f}%"))
+        ccs = list(dm.NEIGHBORS)
+        cc_txt = []
+        for cc in ccs:
+            imp = float(netimp.get(cc, 0.))
+            inst = sum(dm.NEIGHBORS[cc]["fleet"].values()) / 1000.
+            rich = "Import" if imp >= 0 else "Export"
+            cc_txt.append(f"<b>{cc}</b><br>{inst:.0f} GW installiert<br>"
+                          f"Netto-{rich}: {abs(imp):.1f} TWh/a")
+        fig.add_trace(go.Scattergeo(
+            lon=[dm.NEIGHBORS[cc]["x"] for cc in ccs],
+            lat=[dm.NEIGHBORS[cc]["y"] for cc in ccs],
+            text=ccs, hovertext=cc_txt, hoverinfo="text",
+            mode="markers+text", textposition="top center",
+            marker=dict(size=12, color="#B0BEC5"),
+            name="Nachbarländer"))
+
     fig.update_geos(fitbounds="locations", resolution=50, showcountries=True,
                     showland=True, landcolor="#22331a", bgcolor="#0a2540",
                     countrycolor="#555")
@@ -284,7 +324,8 @@ with tab_karte:
                       paper_bgcolor="#0a2540", legend_font_color="white")
     st.plotly_chart(fig, width="stretch")
     st.caption("Grün <50 % · Gelb 50–80 % · Rot >80 % mittlere Auslastung · "
-               "gestrichelt = Offshore-Anbindung")
+               "gestrichelt = Offshore-Anbindung · gepunktet = Kuppelstelle "
+               "(NTC) zu Nachbarländern (graue Marker).")
 
 # ── Engpässe & Schattenpreise ─────────────────────────────────────────
 with tab_eng:
