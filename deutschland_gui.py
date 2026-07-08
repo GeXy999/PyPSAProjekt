@@ -104,9 +104,22 @@ if not st.session_state.ran:
     st.info("👈 Parameter einstellen und **Modell optimieren** drücken.")
     st.stop()
 
-n, era5_ok = solve(co2_budget_mt * 1e6, float(co2_price),
-                   float(load_scale), float(heat_scale),
-                   float(discount_pct) / 100., float(gas_price))
+try:
+    n, era5_ok = solve(co2_budget_mt * 1e6, float(co2_price),
+                       float(load_scale), float(heat_scale),
+                       float(discount_pct) / 100., float(gas_price))
+except Exception as _solve_err:
+    solve.clear()   # kaputtes/leeres Ergebnis nicht cachen
+    st.error(f"❌ Optimierung nicht erfolgreich gelöst.\n\n{_solve_err}")
+    st.info(
+        "**Häufigste Ursache in der Cloud:** ohne Gurobi-Lizenz rechnet HiGHS, "
+        "und das volle Stundenmodell (8760 h) ist dafür oft zu groß → Zeit-/"
+        "Speicherlimit. Abhilfe:\n"
+        "- Gurobi-WLS-Lizenz als **Secret** hinterlegen (dann löst die Cloud wie "
+        "lokal), **oder**\n"
+        "- die Zeitauflösung vergröbern (`TIME_RES` z. B. auf 3) für ein "
+        "kleineres Modell.")
+    st.stop()
 
 # ----------------------------------------------------------------------
 # KPI-Zeile

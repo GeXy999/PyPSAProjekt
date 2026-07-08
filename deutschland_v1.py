@@ -431,20 +431,44 @@ def _get_gurobi_env():
             "TimeLimit": 900, "Method": 2})
     return _gurobi_env
 
+def _assert_optimal(res) -> None:
+    """Wirft einen Fehler, wenn der Solver KEINE optimale Lösung fand.
+    Ohne diese Prüfung würde die App eine unzulässige Zwischenlösung als
+    'Müll' anzeigen (negative/absurde Leistungen, Preis 0, CO₂ über Budget) –
+    typisch, wenn HiGHS in ein Zeitlimit läuft. optimize() liefert
+    ('ok', 'optimal') im Erfolgsfall."""
+    status = condition = None
+    if isinstance(res, tuple):
+        if len(res) >= 2:
+            status, condition = res[0], res[1]
+        elif len(res) == 1:
+            condition = res[0]
+    elif isinstance(res, str):
+        condition = res
+    if condition is not None and str(condition).lower() != "optimal":
+        raise RuntimeError(
+            f"Optimierung nicht optimal gelöst (status={status}, "
+            f"condition={condition}). Modell zu groß für den Solver "
+            f"(z. B. HiGHS im Zeit-/Speicherlimit) oder unzulässig.")
+
+
 def solve_network(net, verbose=True) -> bool:
-    """Gurobi (falls lizensiert), sonst HiGHS. True = Gurobi verwendet."""
+    """Gurobi (falls lizensiert), sonst HiGHS. True = Gurobi verwendet.
+    Prüft, dass die Lösung optimal ist – sonst Exception statt Müll-Plot."""
     if USE_GUROBI:
         try:
-            net.optimize(solver_name="gurobi",
-                         assign_all_duals=True,
-                         solver_options={"env": _get_gurobi_env(),
-                                         "OutputFlag": int(verbose)})
+            res = net.optimize(solver_name="gurobi",
+                               assign_all_duals=True,
+                               solver_options={"env": _get_gurobi_env(),
+                                               "OutputFlag": int(verbose)})
+            _assert_optimal(res)
             return True
         except Exception as e:
             print(f"  ⚠ Gurobi: {e} → HiGHS")
-    net.optimize(solver_name="highs",
-                 assign_all_duals=True,
-                 solver_options={"time_limit": 900})
+    res = net.optimize(solver_name="highs",
+                       assign_all_duals=True,
+                       solver_options={"time_limit": 900})
+    _assert_optimal(res)
     return False
 
 def total_co2(net) -> float:
