@@ -301,7 +301,11 @@ def _era5_region(box, need_pv=True):
     cut = atlite.Cutout(path=path, module="era5",
                         x=slice(x0, x1), y=slice(y0, y1),
                         time=slice("2023-01-01", "2023-12-31"))
-    cut.prepare(["wind", "influx", "temperature"] if need_pv else ["wind"])
+    # data_format="netcdf": lädt direkt als netCDF und vermeidet die
+    # GRIB→netCDF-Konvertierung über cfgrib/eccodes (unter Windows/Py3.14
+    # oft nicht lauffähig). Bereits vorhandene Cutouts werden nicht neu geladen.
+    cut.prepare(["wind", "influx", "temperature"] if need_pv else ["wind"],
+                data_format="netcdf")
     wind = np.clip(cut.wind(turbine="Vestas_V112_3MW", per_unit=True,
                             layout=cut.uniform_layout()).values.flatten(), 0, 1)
     pv = None
