@@ -303,13 +303,15 @@ def _era5_region(box, need_pv=True):
                         time=slice("2023-01-01", "2023-12-31"))
     # data_format="netcdf": lädt direkt als netCDF und vermeidet die
     # GRIB→netCDF-Konvertierung über cfgrib/eccodes (unter Windows/Py3.14
-    # nicht lauffähig – native ecCodes-Lib fehlt). Da die CDS die netCDF-
-    # Requestgröße begrenzt, monatsweise anfragen (monthly_requests) und die
-    # Monate parallel einreichen (concurrent_requests) für erträgliche Dauer.
+    # nicht lauffähig – native ecCodes-Lib fehlt).
+    # monthly_requests=True: die CDS begrenzt die netCDF-Requestgröße →
+    #   monatsweise anfragen (sonst 403 "request too large").
+    # concurrent_requests=False: sequenziell einreichen, sonst überschreiten
+    #   viele gleichzeitige Jobs das CDS-Queue-Limit (max. 150) → 400 "rejected".
     # Bereits vorhandene Cutouts werden nicht neu geladen.
     cut.prepare(["wind", "influx", "temperature"] if need_pv else ["wind"],
                 data_format="netcdf", monthly_requests=True,
-                concurrent_requests=True)
+                concurrent_requests=False)
     wind = np.clip(cut.wind(turbine="Vestas_V112_3MW", per_unit=True,
                             layout=cut.uniform_layout()).values.flatten(), 0, 1)
     pv = None
