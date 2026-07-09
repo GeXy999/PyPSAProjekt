@@ -111,7 +111,7 @@ except Exception:
 # =============================================================
 #  1) AUSGABE-ORDNER & PFADE
 # =============================================================
-OUTPUT_DIR = os.path.join(SCRIPT_DIR, "Deutschland_v1_Output")
+OUTPUT_DIR = os.path.join(SCRIPT_DIR, "output")
 ERA5_DIR   = os.path.join(SCRIPT_DIR, "era5_data")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(ERA5_DIR, exist_ok=True)
@@ -135,6 +135,10 @@ BASE_HEAT     = 45_000.0                # MW mittlere elektrifizierbare Wärmela
 N_MC          = 5                       # Monte-Carlo-Wetterjahre
 
 snapshots = pd.date_range("2025-01-01", periods=HOURS, freq=f"{TIME_RES}h")
+
+# Zeitachsen-Hilfsgrößen (hängen nur an HOURS/TIME_RES → einmal berechnen)
+_DOY = np.arange(HOURS) * TIME_RES / 24.0      # Tag-des-Jahres je Snapshot
+_HOD = (np.arange(HOURS) * TIME_RES) % 24      # Stunde-des-Tages je Snapshot
 
 # Regionen: Name → (lon, lat, Lastanteil, Wärmeanteil)
 REGIONS = {
@@ -294,8 +298,10 @@ def _shift_profile(profile, shift=0, scale=1.0, noise=0.0, seed=0):
         p = p * (1 + rng.normal(0, noise, p.shape[0]))
     return np.clip(p, 0.0, 1.0)
 
-def _era5_region(box, need_pv=True):
-    """Lädt Wind- (und ggf. PV-)Kapazitätsfaktoren einer ERA5-Box."""
+def _era5_region(box, need_pv=True, concurrent=False):
+    """Lädt Wind- (und ggf. PV-)Kapazitätsfaktoren einer ERA5-Box.
+    concurrent=True reicht die Monats-Requests parallel ein (schneller, nur
+    bei freier CDS-Queue sinnvoll – Vorabdownload); Standard sequenziell."""
     x0, x1, y0, y1 = box
     path = os.path.join(ERA5_DIR, f"de_{x0}_{y0}_2023.nc")
     cut = atlite.Cutout(path=path, module="era5",
@@ -311,14 +317,15 @@ def _era5_region(box, need_pv=True):
     # Bereits vorhandene Cutouts werden nicht neu geladen.
     cut.prepare(["wind", "influx", "temperature"] if need_pv else ["wind"],
                 data_format="netcdf", monthly_requests=True,
-                concurrent_requests=False)
+                concurrent_requests=concurrent)
+    layout = cut.uniform_layout()          # einmal berechnen, für Wind + PV nutzen
     wind = np.clip(cut.wind(turbine="Vestas_V112_3MW", per_unit=True,
-                            layout=cut.uniform_layout()).values.flatten(), 0, 1)
+                            layout=layout).values.flatten(), 0, 1)
     pv = None
     if need_pv:
         pv = np.clip(cut.pv(panel="CSi", per_unit=True,
                             orientation={"slope": 35., "azimuth": 180.},
-                            layout=cut.uniform_layout()).values.flatten(), 0, 1)
+                            layout=layout).values.flatten(), 0, 1)
     return wind[::TIME_RES][:HOURS], (pv[::TIME_RES][:HOURS] if pv is not None else None)
 
 def make_profiles(mc_seed: int | None = None,
@@ -376,16 +383,14 @@ def make_profiles(mc_seed: int | None = None,
 
 def make_loads(load_scale=1.0, heat_scale=1.0, mc_seed=None) -> dict[str, np.ndarray]:
     """Strom- und Wärmelastprofile je Region [MW]."""
-    doy = np.arange(HOURS) * TIME_RES / 24.0
-    hod = (np.arange(HOURS) * TIME_RES) % 24
     if mc_seed is not None:
         np.random.seed(mc_seed * 17 + 4)
         load_scale *= 1 + np.random.uniform(-0.05, 0.05)
         heat_scale *= 1 + np.random.uniform(-0.05, 0.05)
-    lt = BASE_LOAD * load_scale * (1 + .20 * np.cos(2*np.pi*(doy-355)/365)) \
-                                * (1 + .15 * np.sin(np.pi*(hod-6)/12))
-    ht = BASE_HEAT * heat_scale * (1 + .55 * np.cos(2*np.pi*(doy-355)/365)) \
-                                * (1 + .08 * np.cos(2*np.pi*hod/24))
+    lt = BASE_LOAD * load_scale * (1 + .20 * np.cos(2*np.pi*(_DOY-355)/365)) \
+                                * (1 + .15 * np.sin(np.pi*(_HOD-6)/12))
+    ht = BASE_HEAT * heat_scale * (1 + .55 * np.cos(2*np.pi*(_DOY-355)/365)) \
+                                * (1 + .08 * np.cos(2*np.pi*_HOD/24))
     out = {}
     for reg, (_, _, la, ha) in REGIONS.items():
         out[f"load_{reg}"] = lt * la
@@ -423,7 +428,7 @@ def build_network(prof: dict, loads: dict,
     OP = opex(co2_price, gas_price)
     net = pypsa.Network()
     net.set_snapshots(snapshots)
-    net.snapshot_weightings.loc[:, :] = TIME_RES   # 3h-Schritte korrekt gewichten
+    net.snapshot_weightings.loc[:, :] = TIME_RES   # TIME_RES-Stunden je Schritt korrekt gewichten
 
     for c, co2 in [("wind", 0.), ("solar", 0.), ("hydro", 0.), ("gas", 0.370),
                    ("lignite", 1.0), ("hardcoal", 0.8),
@@ -679,7 +684,8 @@ def re_share(net, buses=None) -> float:
     g = net.generators if buses is None else net.generators[net.generators.bus.isin(buses)]
     p = net.generators_t.p[g.index].sum()
     ee = p[g.carrier.isin(["wind", "solar", "hydro"])].sum()
-    return 100. * ee / p.sum() if p.sum() > 0 else 0.
+    tot = p.sum()
+    return 100. * ee / tot if tot > 0 else 0.
 
 def total_cost(net) -> float:
     """Gesamte annualisierte Systemkosten [€/a].
@@ -702,8 +708,8 @@ def total_cost(net) -> float:
 #    1) Referenzdaten/referenz_<jahr>.csv   (schlank, bevorzugt)
 #    2) Produktionsdaten für PyPSA.xlsx     (Original, Fallback)
 #    3) per Datei-Upload uebergeben         (fuer Streamlit Cloud)
-REFERENCE_DIR    = os.path.join(SCRIPT_DIR, "Referenzdaten")
-REFERENCE_XLSX   = os.path.join(SCRIPT_DIR, "Produktionsdaten für PyPSA.xlsx")
+REFERENCE_DIR    = os.path.join(SCRIPT_DIR, "data", "Referenzdaten")
+REFERENCE_XLSX   = os.path.join(SCRIPT_DIR, "data", "Produktionsdaten für PyPSA.xlsx")
 REFERENCE_SHEETS = ["2007", "2009"]        # verfügbare Wetterjahre
 
 

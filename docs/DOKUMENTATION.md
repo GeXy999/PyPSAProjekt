@@ -1,6 +1,6 @@
 # 📘 Dokumentation – Deutschland Energy Model
 
-> **Stand:** 08.07.2026 · **Version:** v1.1 (europäische Kopplung)
+> **Stand:** 09.07.2026 · **Version:** v1.1 (europäische Kopplung; Ordnerstruktur aufgeräumt)
 > Diese Datei erklärt die beiden Kern-Skripte des Projekts und die wichtigsten
 > Funktionen & Formeln. Sie wird bei Änderungen am Code mitgepflegt.
 >
@@ -50,13 +50,26 @@ und CO₂-Budget.
 
 ```
 D:\Project_PyPSA\
-├── deutschland_v1.py        ← Modell (Kern)
-├── deutschland_gui.py       ← Streamlit-Dashboard
-├── DOKUMENTATION.md         ← diese Datei
-├── Produktionsdaten für PyPSA.xlsx   ← Referenz-Ein-Knoten-Modell (nur lokal)
-├── .venv\                   ← Python-Umgebung
-└── Deutschland_v1_Output\   ← erzeugte Plots & PDF-Bericht
+├── deutschland_v1.py        ← Modell (Kern)      ┐ Quelldateien bleiben im Root
+├── deutschland_gui.py       ← Streamlit-Dashboard ┘ (Pfade sind SCRIPT_DIR-relativ)
+├── requirements.txt         ← Abhängigkeiten (Cloud)
+├── data\                    ← Eingangsdaten (nur lokal, nicht im Repo)
+│   ├── era5_data\           ←   ERA5-Wettercache (atlite)  [Stand: zieht noch nach]
+│   ├── Referenzdaten\       ←   referenz_2007.csv / referenz_2009.csv
+│   └── Produktionsdaten für PyPSA.xlsx  ← Referenz-Ein-Knoten-Modell
+├── output\                  ← erzeugte Plots & PDF-Bericht
+├── docs\                    ← diese Dokumentation
+├── archive\                 ← Backup + TXT-Kopien (Sicherung)
+├── graphify-out\            ← Knowledge-Graph (graph.html/json, generiert)
+└── .venv\                   ← Python-Umgebung
 ```
+
+> ℹ️ **Ordnerstruktur (Stand 09.07.2026):** Ein-/Ausgabe liegt jetzt in `data\`
+> bzw. `output\`. Die Pfade sind im Code zentral über `SCRIPT_DIR` gesetzt
+> (`OUTPUT_DIR`, `ERA5_DIR`, `REFERENCE_DIR`, `REFERENCE_XLSX` in `deutschland_v1.py`) –
+> die **Quelldateien müssen im Projekt-Root bleiben**, sonst brechen diese Pfade.
+> Hinweis: `era5_data\` wandert erst nach `data\`, sobald der laufende ERA5-Download
+> fertig ist.
 
 **Dashboard starten:**
 ```bash

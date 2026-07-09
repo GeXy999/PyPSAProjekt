@@ -4,7 +4,9 @@
 # Ergebnis-Ordner und Wetterdaten (reproduzierbar, nicht versionieren)
 *_Output/
 Lummerland_Output
+output/
 era5_data
+graphify-out/
 
 # Python
 __pycache__/
