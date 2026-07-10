@@ -1,6 +1,6 @@
 # 📘 Dokumentation – Deutschland Energy Model
 
-> **Stand:** 09.07.2026 · **Version:** v1.1 (europäische Kopplung; Ordnerstruktur aufgeräumt)
+> **Stand:** 10.07.2026 · **Version:** v1.2 (Schritt 2 „ganz Europa"; Update-Knopf; Launcher/Setup; GUI-Verbesserungen inkl. Erklär-Hilfetexte; CO₂-Preis-Sensitivität)
 > Diese Datei erklärt die beiden Kern-Skripte des Projekts und die wichtigsten
 > Funktionen & Formeln. Sie wird bei Änderungen am Code mitgepflegt.
 >
@@ -53,23 +53,51 @@ D:\Project_PyPSA\
 ├── deutschland_v1.py        ← Modell (Kern)      ┐ Quelldateien bleiben im Root
 ├── deutschland_gui.py       ← Streamlit-Dashboard ┘ (Pfade sind SCRIPT_DIR-relativ)
 ├── requirements.txt         ← Abhängigkeiten (Cloud)
+├── launcher\                ← Start-/Stopp-Skripte (Desktop-Icon zeigt hierher)
+│   ├── start_app.bat        ←   öffnet VS Code + Streamlit (Konsolen schließen sich)
+│   ├── stop_app.bat         ←   beendet die versteckt laufende GUI
+│   ├── update_app.bat       ←   Programm-Update (git pull --ff-only + pip install)
+│   └── check_download.bat   ←   ERA5-Fortschritt (Nachbarn 11 + Europa 13)
+├── assets\                  ← statische Assets (app_icon.ico fürs Desktop-Icon)
 ├── data\                    ← Eingangsdaten (nur lokal, nicht im Repo)
-│   ├── era5_data\           ←   ERA5-Wettercache (atlite)  [Stand: zieht noch nach]
 │   ├── Referenzdaten\       ←   referenz_2007.csv / referenz_2009.csv
 │   └── Produktionsdaten für PyPSA.xlsx  ← Referenz-Ein-Knoten-Modell
+├── era5_data\               ← ERA5-Wettercache (atlite); wandert nach data\ bei 11/11
 ├── output\                  ← erzeugte Plots & PDF-Bericht
 ├── docs\                    ← diese Dokumentation
-├── archive\                 ← Backup + TXT-Kopien (Sicherung)
+│   └── prompts\             ←   persönliche Claude-Code-Prompt-Sammlungen
+├── archive\                 ← Backup + TXT-Kopien (Sicherung, gitignored)
 ├── graphify-out\            ← Knowledge-Graph (graph.html/json, generiert)
 └── .venv\                   ← Python-Umgebung
 ```
 
-> ℹ️ **Ordnerstruktur (Stand 09.07.2026):** Ein-/Ausgabe liegt jetzt in `data\`
-> bzw. `output\`. Die Pfade sind im Code zentral über `SCRIPT_DIR` gesetzt
-> (`OUTPUT_DIR`, `ERA5_DIR`, `REFERENCE_DIR`, `REFERENCE_XLSX` in `deutschland_v1.py`) –
-> die **Quelldateien müssen im Projekt-Root bleiben**, sonst brechen diese Pfade.
-> Hinweis: `era5_data\` wandert erst nach `data\`, sobald der laufende ERA5-Download
+> ℹ️ **Ordnerstruktur (Stand 09.07.2026):** Eingangs-/Ausgabedaten liegen in `data\`
+> bzw. `output\`; Start-Skripte in `launcher\`, das Icon in `assets\`. Die Datenpfade
+> sind im Code zentral über `SCRIPT_DIR` gesetzt (`OUTPUT_DIR`, `ERA5_DIR`,
+> `REFERENCE_DIR`, `REFERENCE_XLSX` in `deutschland_v1.py`) – die **Quelldateien müssen
+> im Projekt-Root bleiben**, sonst brechen diese Pfade. Hinweis: `era5_data\` liegt noch
+> im Root und wandert erst nach `data\`, sobald der laufende ERA5-Download (11 Nachbarn)
 > fertig ist.
+
+**Ersteinrichtung auf einem neuen PC:** `setup.bat` (im Projekt-Root) doppelklicken –
+es legt pfad-unabhängig die virtuelle Umgebung `.venv` an, installiert
+`requirements.txt` und erstellt die Desktop-Verknüpfung samt App-Icon. Danach ist der
+Ordner startklar (App über das Desktop-Icon). Voraussetzung: Python 3.11+ mit „Add to
+PATH". `.venv/` und `.env` sind gitignored, kommen also nicht mit dem Klon/Kopieren mit –
+genau die füllt `setup.bat`. (ERA5-Wetter bleibt optional: ohne `atlite`+CDS-Key rechnet
+das Modell synthetisch.)
+
+**Desktop-Icon:** Die Verknüpfung „Deutschland Energy Model" auf dem Desktop startet
+`launcher\start_app.bat` – öffnet VS Code auf dem Projekt und die Streamlit-GUI; es
+bleiben keine Konsolenfenster offen (Streamlit läuft versteckt, Stoppen via
+`launcher\stop_app.bat`).
+
+**VS-Code-Integration (`.vscode\`):** `settings.json` pinnt den venv-Interpreter
+(`\.venv\Scripts\python.exe`) – verhindert „falscher Python"-Importfehler – und blendet
+`__pycache__` aus (Format-on-Save bewusst aus). `extensions.json` empfiehlt Python +
+Pylance. `tasks.json` bietet unter **Strg+Shift+P → „Tasks: Run Task"** fertige Befehle:
+*App starten/stoppen*, *Download-Status* (`launcher\check_download.bat` → X/11), *Graphify-
+Update (code-only)* und *Syntax-Check*.
 
 **Dashboard starten:**
 ```bash
@@ -199,6 +227,9 @@ und werden vom Solver optimal dimensioniert.
   `DISCOUNT_RATE` temporär und stellt ihn danach wieder her.
 - **`run_monte_carlo(n_mc, ...)`** — wiederholt den Lauf über `n_mc` synthetische
   Wetterjahre und sammelt Kosten/CO₂/EE-Anteil in einer Tabelle (Robustheitsprüfung).
+- **`run_co2_sweep(prices, ...)`** — löst das Modell je CO₂-Preis neu und sammelt
+  Kosten/CO₂/EE-Anteil und Kapazitäten je Träger (CO₂-Preis-Sensitivität, s. 3.11);
+  Plot via `plot_co2_sweep(df, path)`.
 
 ### 3.8 Unter der Haube ① – Was der Solver *genau* macht
 
@@ -329,6 +360,62 @@ Jahr. Interpretation: **große Streuung = wetterempfindliches System**, kleine S
 
 ---
 
+### 3.11 Unter der Haube ④ – Die CO₂-Preis-Sensitivität
+
+**Was ist das?** Während die Monte-Carlo-Analyse die *Natur* (Wetter) variiert und
+Politik/Preise festhält, dreht die **CO₂-Preis-Sensitivität** genau umgekehrt an einem
+**politischen** Stellhebel: Sie fragt, **wie sich das kostenoptimale Stromsystem
+verändert, wenn der CO₂-Preis steigt**. Der CO₂-Preis ist ein Aufschlag [€/tCO₂] auf die
+Brennstoffkosten fossiler Kraftwerke – je höher er ist, desto teurer werden Gas, Braun-
+und Steinkohle relativ zu Wind und Solar.
+
+**Warum interessant?** Genau dieser Preis ist das zentrale klimapolitische Instrument
+(EU-ETS, CO₂-Bepreisung). Die Sensitivität zeigt anschaulich, **ab welchem Preisniveau**
+das Modell fossile Erzeugung verdrängt und in erneuerbare Kapazitäten investiert – also
+die „Umkipp-Punkte" der Systemtransformation.
+
+**Das Prinzip** (`run_co2_sweep()`): Für **jeden** Preis aus einem Raster wird das
+komplette Modell **einmal neu optimiert** – mit exakt denselben Bauwegen wie der
+Standardlauf (`run_base`), nur mit variiertem `co2_price`. Gesammelt werden pro Preis:
+Gesamtkosten, CO₂-Ausstoß, EE-Anteil und die **optimierten Kapazitäten je
+Erzeugungsträger** (in GW).
+
+```python
+for p in prices:                              # z. B. [0, 50, 100, 150, 200, 300] €/t
+    net, _ = run_base(co2_price=p, …)         # (1) Modell mit diesem CO₂-Preis lösen
+    → Kosten, CO₂, EE-Anteil                   # (2) Systemkennzahlen
+    → Kap_wind_GW, Kap_solar_GW, Kap_gas_GW …  # (3) Kapazität je carrier aufsummiert
+```
+
+**Was ausgewertet wird:** Der Plot (`plot_co2_sweep()`) hat zwei Teile:
+- **oben** – Systemkosten (Mrd €/a), CO₂ (Mt) und EE-Anteil (%) über den CO₂-Preis.
+  Typisches Muster: mit steigendem Preis **sinkt CO₂**, **steigt der EE-Anteil**, und die
+  Gesamtkosten steigen (der Preis ist ein Aufschlag auf verbleibende Fossilerzeugung).
+- **unten** – die optimierten Kapazitäten je Träger. Man sieht direkt, **welche**
+  Technologien mit steigendem Preis ausgebaut (Wind/Solar) bzw. zurückgefahren werden
+  (Gas/Kohle).
+
+Fehlgeschlagene Preispunkte landen – wie bei Monte-Carlo – als `NaN` mit Fehlerstatus in
+der Tabelle, ohne den Gesamtlauf abzubrechen.
+
+**Aufruf:** Die Sensitivität ist **rein additiv** und **opt-in**: Der Standardlauf von
+`deutschland_v1.py` bleibt unverändert. Nur wenn die Umgebungsvariable `CO2_SWEEP=1`
+gesetzt ist, rechnet das Hauptprogramm zusätzlich den Sweep und schreibt
+`deutschland_v1_co2_sweep.png`. Programmatisch:
+`df = run_co2_sweep(prices=[0, 100, 200])`.
+
+> ⚠️ **Ehrliche Einordnung:**
+> - **Jeder Preis = eine eigene, komplette Optimierung** (Greenfield). Das Raster mit 6
+>   Punkten bedeutet 6 volle Modellläufe – entsprechend Rechenzeit einplanen.
+> - Es gilt dieselbe Wetter-Grundlage wie im übrigen Modell (synthetische Profile bzw.
+>   ERA5), **keine** empirische Kalibrierung der Ergebnisse.
+> - Das CO₂-**Budget** bleibt konstant; variiert wird nur der **Preis**. Ist das Budget
+>   bindend, kann der Preis-Effekt teilweise überlagert werden – für eine reine
+>   Preis-Sensitivität das Budget großzügig wählen.
+> - Perfekte Voraussicht pro Lauf (wie das Grundmodell).
+
+---
+
 ## 4. `deutschland_gui.py` – Das Dashboard
 
 Ein **Streamlit**-Overlay über das Modell. Grundprinzip: Sidebar-Parameter → Klick
@@ -363,16 +450,87 @@ auf *„Modell optimieren"* → gecachter Lauf → Ergebnis-Tabs.
 | 🏗️ **Kapazitäten** | Optimierter Zubau je Anlage, Jahreserzeugung, Netz-/Sektorausbau |
 | 💶 **Preise** | Knotenpreise je Region (Verlauf, Verteilung, Monatsheatmap) |
 | 🔋 **Speicher & H₂** | Füllstände Batterien, Pumpspeicher, H₂-Tank, Wärmespeicher |
-| 🗺️ **Karte** | Geografische Karte mit Leitungsauslastung (Ampelfarben) |
+| 🗺️ **Karte** | Interaktive Karte auf echtem Carto-Dark-Basemap: Zonen, Leitungen (Auslastungs-Ampel), bei Kopplung Nachbarn (→ 4.4) |
 | 🚧 **Engpässe** | Schattenpreise (Duale): Leitungs- & Erzeuger-Knappheit, Sektorpreise |
 | ⚖️ **Vergleich** | 5-Zonen-Modell vs. Ein-Knoten-Referenz (→ Kapitel 5) |
 | 🎲 **Monte-Carlo** | Kosten/CO₂/EE über mehrere Wetterjahre |
+| 📊 **Läufe** | Vergleich der letzten bis zu 5 Optimierungsläufe (→ 4.4) |
 | 📄 **Bericht** | Erzeugt Plots + PDF-Bericht zum Download |
 
 > ⚠️ **Streamlit-Regel:** Jedes interaktive Widget braucht eine eindeutige ID. Zwei
 > gleiche Widgets (z. B. zwei „Woche im Jahr"-Slider) mit identischen Parametern
 > kollidieren → `StreamlitDuplicateElementId`. Lösung: `key="…"` vergeben (siehe
 > `key="woche_vergleich"` im Vergleich-Tab).
+
+### 4.4 GUI-Verbesserungen (Session-Persistenz, Downloads, Lauf-Vergleich)
+
+Komfort-Funktionen des Dashboards – **nur GUI**, die Modell-Logik in
+`deutschland_v1.py` bleibt unverändert:
+
+- **Session-Persistenz der Parameter:** Jeder Sidebar-Regler hat ein `key=`
+  (z. B. `key="co2_budget_mt"`). Streamlit hält die Einstellungen damit über Reruns
+  und Tab-Wechsel hinweg. *(Ein harter Browser-Reload startet eine neue Session und
+  setzt zurück – das ist Streamlit-bedingt.)*
+- **Kompaktere Sidebar:** Parameter in vier aufklappbaren Gruppen (`st.expander`):
+  **🌍 Klima** (offen), **🔌 Nachfrage**, **💰 Ökonomie**, **🌍 Europa** (zugeklappt).
+- **CSV-Downloads:** In **Kapazitäten**, **Preise** und **Speicher & H₂** lädt je ein
+  Button die Tabelle als CSV (UTF-8-BOM, Trenner `;`, Dezimalkomma → öffnet direkt in
+  deutschem Excel). Helper: `_csv_download()`.
+- **Lauf-Vergleich (Tab 📊 Läufe):** Nach jedem neuen Szenario wird ein KPI-Snapshot
+  (Kosten, CO₂, EE, Erzeugung + Parameter, Zeit) in `st.session_state.runs` abgelegt
+  (max. 5; Dedup über eine Parameter-Signatur, damit gecachte Reruns nicht doppelt
+  zählen). Der Tab zeigt Tabelle + gruppiertes Balkendiagramm (Kosten vs. EE je Lauf)
+  und einen Button „Läufe zurücksetzen".
+- **Fortschrittsbalken:** `run_base`/`run_monte_carlo` melden über einen optionalen
+  `progress`-Callback die Phasen (Wetter → Lasten → Netz → Solver) bzw. das laufende
+  MC-Jahr; die GUI zeigt daraus einen Balken (der Solver selbst ist Blackbox → hält
+  bei ~55 %).
+- **KPI-Sparklines:** Unter jeder der fünf KPI-Metriken (Kosten, Strompreis, CO₂,
+  EE-Anteil, Erzeugung) zeigt eine kompakte achsenlose `px.line`-Sparkline (Höhe 40 px,
+  transparenter Hintergrund) den Trend über die letzten Läufe. Datenquelle ist eine
+  eigene, schlanke Liste `st.session_state.kpi_hist` (fünf Kennzahlen je Lauf, max. 15,
+  Dedup über dieselbe Parameter-Signatur wie `runs`) – bewusst getrennt von `runs`,
+  damit der 📊-Läufe-Tab unangetastet bleibt. Bei weniger als zwei Läufen steht statt
+  des Charts der Hinweis „Noch keine Trend-Daten – mehrfach optimieren". Der Reset-Button
+  im Läufe-Tab leert `kpi_hist` mit.
+- **Hell/Dunkel-Umschalter (Diagramme):** Toggle „☀️" oben rechts schaltet zwischen
+  dem dunklen Plotly-Theme `de_energy` und dem hellen Pendant `de_energy_light`
+  (gleiche Colorway, invertierte Hintergrund-/Schriftfarben) via
+  `pio.templates.default`; zusätzlich wird ein Light-CSS-Override auf den Hauptbereich
+  gelegt. **Ehrliche Grenze:** Streamlits *native* Widgets (Sidebar-Regler, Checkboxen)
+  kommen aus `config.toml` (base=dark) und lassen sich zur Laufzeit **nicht** per CSS
+  umfärben – deshalb bleibt die **Sidebar bewusst dunkel** und nur der Hauptbereich
+  wird hell. Ein vollständiges App-Light-Theme ist mit Streamlit so nicht sauber
+  erreichbar; der Toggle wirkt v. a. auf Diagramme und die gestylten Hauptflächen.
+- **Mono-SVG-Icons für Energieträger:** `ICONS`-Dict mit einheitlichen 20-px-Strich-Icons
+  (Wind, Solar, Gas, H₂, Batterie, Netz; Strichfarbe = Energie-Blau, theme-neutral),
+  gerendert als dezente Legende unter dem Hero via `st.markdown(unsafe_allow_html=True)`.
+  Tab-Namen behalten aus Kompatibilitätsgründen ihre Emojis.
+- **Update per Knopfdruck:** Sidebar-Expander „🔄 Update" führt `git pull --ff-only`
+  im Projektordner aus (nur Fast-Forward → lokale Änderungen werden nie
+  überschrieben) und zeigt die Git-Ausgabe an; nach einem Update muss die App neu
+  gestartet werden. Alternativ ohne laufende App: `launcher\update_app.bat`
+  (zieht zusätzlich `requirements.txt` nach).
+- **Kurze Tab-Erklärungen:** Jeder Tab startet mit einer einzeiligen `st.info`-Box.
+- **Mobilfreundlicheres Layout:** KPI-Zeile zweizeilig (3 + 2) statt fünfspaltig;
+  nebeneinanderliegende Diagramme mit gleichen Spaltenbreiten.
+- **Auto-Erklärung des Laufs:** Button „🧑‍🏫 Ergebnis erklären" oberhalb der Tabs
+  setzt aus den KPIs (dominanter Träger via `model_energy_by_carrier()`, Kosten, EE,
+  CO₂, zubaustärkste Zone) einen 3–4-Satz-Fließtext zusammen – reine
+  Python-String-Formatierung, **kein LLM-Call** – und zeigt ihn in einer `st.info`-Box.
+- **Interaktive Karte:** echtes **Carto-Dark-Basemap** (`go.Scattermap`, MapLibre,
+  token-frei) statt der früheren stilisierten Fläche – zoom-/schwenkbar. ⚠ Die
+  Kartenkacheln brauchen Internet (offline bleibt der Hintergrund leer). MapLibre-Linien
+  können kein Dash → Offshore-/Kuppelstellen werden über Breite/Transparenz unterschieden.
+- **Modernes dunkles Theme:** Hero-Header mit Deutschland-Flaggenakzent, KPI-Karten,
+  einheitliches dunkles Plotly-Template (`de_energy`) für alle Diagramme; Basis-Theme in
+  `.streamlit/config.toml`.
+- **Erklär-Hilfetexte für Einsteiger:** Zusätzliche `help=`-Tooltips und aufklappbare
+  `st.expander("ℹ️ …")`-Boxen erklären die kniffligen Konzepte direkt in der App –
+  CO₂-**Budget** (harte Obergrenze) vs. -**Preis** (Merit-Order-Anreiz), Diskontsatz/WACC
+  (warum er den Zubau beeinflusst), Monte-Carlo (Streuung = Wetterrobustheit), HiGHS vs.
+  Gurobi, sowie die KPI-Fallstricke (Schattenpreis ≠ Endkundenpreis, Leistung GW ≠
+  Erzeugung TWh). Rein additiv – keine Modell-Logik berührt.
 
 ---
 
@@ -580,6 +738,32 @@ Linien mit Auslastungs-Ampel (grün/gelb/rot) gezeichnet.
   Kopplung umfasst das das **gesamte** gekoppelte System (DE + Nachbarn).
 - Neuer Tab **🌍 Nachbarn**: Netto-Import DE, Jahresbilanz je Land und der
   Kuppelstellen-Fluss über eine Woche.
+
+### 9.3 Schritt 2: „ganz Europa" (2. Länderring)
+
+Die Checkbox **Schritt 2: ganz Europa** (nur zusammen mit „Nachbarländer koppeln")
+erweitert das System um **13 weitere Länder** nach exakt demselben Ein-Knoten-Prinzip
+wie die Nachbarn: `EUROPE2 = ES, PT, IT, GB, IE, FI, SK, HU, SI, HR, RO, BG, GR`.
+
+- **Einziger struktureller Unterschied:** Die Kuppelstelle verbindet nicht eine
+  DE-Zone, sondern das **Partnerland** (`zone`-Feld = Ländercode): ES↔FR, PT↔ES,
+  IT↔CH, GB↔FR, IE↔GB, FI↔SE, SK↔CZ, HU↔AT, SI↔AT, HR↔SI, RO↔HU, BG↔RO, GR↔BG.
+  Die Reihenfolge im Dict stellt sicher, dass der Partner-Bus beim Aufbau schon
+  existiert. Insgesamt: 34 Busse, 24 Kuppelstellen (11 Nachbarn + 13 Europa).
+- **Umsetzung:** `include_europe`-Flag durch `run_base → make_profiles →
+  build_network`; `ALL_FOREIGN = NEIGHBORS | EUROPE2` und
+  `ERA5_BOXES_FOREIGN = …_NEIGHBORS | …_EUROPE` als merged Dicts. Mit
+  `include_europe=False` (Default) ist das Verhalten **beweisbar unverändert**
+  (identische Loops über `NEIGHBORS`).
+- **Wetter:** wie bei den Nachbarn synthetisch (länderspezifisch skaliert) oder mit
+  „Ausland: ERA5" aus echten ERA5-Daten (`ERA5_BOXES_EUROPE`, gleicher
+  CDS-Download-mit-Fallback-Mechanismus).
+- **Ehrlichkeit/Grenzen:** Flotten und Jahresverbrauch sind **literaturbasierte
+  Näherungen (~2023/24, ENTSO-E/IRENA-Größenordnungen)**, ein Knoten pro Land,
+  Lastform = skalierte DE-Kurve, nur ein Kuppel-Link je Land (reale Grenzkuppel-
+  Topologie ist maschiger). KPIs bleiben auf Deutschland gefiltert; das CO₂-Budget
+  gilt weiterhin nur für DE. Monte-Carlo nutzt Schritt 2 nicht.
+- Das Modell wird spürbar größer (24 zusätzliche Länderknoten) → längere Solver-Zeit.
 
 > ⚠️ **Wichtige Korrektur an „Gesamtkosten" (betrifft auch den Solo-DE-Lauf):**
 > PyPSA trennt die Zielfunktion in `objective` (variabel) und `objective_constant`
