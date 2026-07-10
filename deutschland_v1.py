@@ -244,7 +244,7 @@ ERA5_BOXES_NEIGHBORS = {
     "NO": ( 6.0, 11.0, 58.0, 62.0),
 }
 
-# ── Schritt 2: „ganz Europa" – zweiter Länderring (je 1 Knoten) ─────────
+# ── Kreis 2: 13 weitere europäische Länder – zweiter Länderring (je 1 Knoten) ──
 #  Gleiche Struktur wie NEIGHBORS; einziger Unterschied: `zone` ist hier das
 #  PARTNERLAND (Kuppelstelle Land↔Land statt Land↔DE-Zone), z. B. ES↔FR.
 #  Reihenfolge so gewählt, dass der Partner-Bus beim Aufbau schon existiert

@@ -1,6 +1,6 @@
 # 📘 Dokumentation – Deutschland Energy Model
 
-> **Stand:** 10.07.2026 · **Version:** v1.2 (Schritt 2 „ganz Europa"; Update-Knopf; Launcher/Setup; GUI-Verbesserungen inkl. Erklär-Hilfetexte; CO₂-Preis-Sensitivität)
+> **Stand:** 10.07.2026 · **Version:** v1.2 (Kreis 2 – 13 weitere europäische Länder; Update-Knopf; Launcher/Setup; GUI-Verbesserungen inkl. Erklär-Hilfetexte; CO₂-Preis-Sensitivität)
 > Diese Datei erklärt die beiden Kern-Skripte des Projekts und die wichtigsten
 > Funktionen & Formeln. Sie wird bei Änderungen am Code mitgepflegt.
 >
@@ -739,11 +739,13 @@ Linien mit Auslastungs-Ampel (grün/gelb/rot) gezeichnet.
 - Neuer Tab **🌍 Nachbarn**: Netto-Import DE, Jahresbilanz je Land und der
   Kuppelstellen-Fluss über eine Woche.
 
-### 9.3 Schritt 2: „ganz Europa" (2. Länderring)
+### 9.3 Kreis 2: weitere europäische Länder (2. Länderring)
 
-Die Checkbox **Schritt 2: ganz Europa** (nur zusammen mit „Nachbarländer koppeln")
+Die Checkbox **Kreis 2: weitere Länder** (nur zusammen mit „Nachbarländer koppeln")
 erweitert das System um **13 weitere Länder** nach exakt demselben Ein-Knoten-Prinzip
 wie die Nachbarn: `EUROPE2 = ES, PT, IT, GB, IE, FI, SK, HU, SI, HR, RO, BG, GR`.
+**Bewusst kein „ganz Europa":** Es ist eine **Auswahl** von 13 Ländern (die größten/
+relevantesten), nicht der komplette Kontinent – daher der neutrale Name „Kreis 2".
 
 - **Einziger struktureller Unterschied:** Die Kuppelstelle verbindet nicht eine
   DE-Zone, sondern das **Partnerland** (`zone`-Feld = Ländercode): ES↔FR, PT↔ES,
@@ -762,7 +764,7 @@ wie die Nachbarn: `EUROPE2 = ES, PT, IT, GB, IE, FI, SK, HU, SI, HR, RO, BG, GR`
   Näherungen (~2023/24, ENTSO-E/IRENA-Größenordnungen)**, ein Knoten pro Land,
   Lastform = skalierte DE-Kurve, nur ein Kuppel-Link je Land (reale Grenzkuppel-
   Topologie ist maschiger). KPIs bleiben auf Deutschland gefiltert; das CO₂-Budget
-  gilt weiterhin nur für DE. Monte-Carlo nutzt Schritt 2 nicht.
+  gilt weiterhin nur für DE. Monte-Carlo nutzt Kreis 2 nicht.
 - Das Modell wird spürbar größer (24 zusätzliche Länderknoten) → längere Solver-Zeit.
 
 > ⚠️ **Wichtige Korrektur an „Gesamtkosten" (betrifft auch den Solo-DE-Lauf):**

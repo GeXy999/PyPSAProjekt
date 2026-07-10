@@ -141,7 +141,7 @@ if _light:
 st.markdown("""
 <div class="de-hero">
   <h1>⚡ Deutschland Energy Model
-      <span style="color:#9fc3e8;font-weight:600;font-size:1rem;">v1.0</span></h1>
+      <span style="color:#9fc3e8;font-weight:600;font-size:1rem;">v1.2</span></h1>
   <div class="sub">Kostenminimales Stromsystem für Deutschland · PyPSA-Kapazitätsausbau</div>
   <div class="de-chips">
     <span class="de-chip">5 Zonen + Offshore</span>
@@ -150,6 +150,7 @@ st.markdown("""
     <span class="de-chip">Kapazitätsausbau</span>
     <span class="de-chip">Monte-Carlo</span>
     <span class="de-chip">11 Nachbarländer</span>
+    <span class="de-chip">+ Kreis 2 (13 Länder)</span>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -248,12 +249,13 @@ with sb.expander("🌍 Europa", expanded=False):
                                          "CZ, AT, CH, SE, NO) als Ein-Knoten-Modelle "
                                          "mit Import/Export. Nur DE baut aus; "
                                          "CO₂-Budget gilt nur für DE.")
-    include_europe = st.checkbox("Schritt 2: ganz Europa", value=False,
+    include_europe = st.checkbox("Kreis 2: weitere Länder", value=False,
                                  disabled=not include_neighbors,
                                  key="include_europe",
-                                 help="Koppelt zusätzlich einen 2. Länderring "
-                                      "(ES, PT, IT, GB, IE, FI, SK, HU, SI, HR, "
-                                      "RO, BG, GR) – Kuppelstelle jeweils ans "
+                                 help="Koppelt einen 2. Länderkreis mit 13 weiteren "
+                                      "(nicht allen!) europäischen Ländern: "
+                                      "ES, PT, IT, GB, IE, FI, SK, HU, SI, HR, "
+                                      "RO, BG, GR – Kuppelstelle jeweils ans "
                                       "Partnerland (z. B. ES↔FR). Gleiches "
                                       "Prinzip wie die Nachbarländer; Flotten "
                                       "literaturbasiert. Modell wird größer/"
