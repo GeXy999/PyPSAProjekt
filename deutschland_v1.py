@@ -6,20 +6,20 @@
 #  GUI:        streamlit run deutschland_gui.py   (importiert dieses Modul)
 #
 #  ÜBERTRAGEN von Lummerland v4:
-#  ✓ 5 Zonen: Nord, Ost, West, Sued, Offshore (Nordsee)
-#  ✓ Sektorkopplung: Wärmepumpen + Wärmespeicher (Nord, Ost, West, Sued)
-#  ✓ H₂-System: Elektrolyseur, H₂-Tank, Brennstoffzelle
-#  ✓ ERA5-Wetterdaten via atlite (echte deutsche Koordinaten) + Fallback
-#  ✓ CO₂-Budget (GlobalConstraint) + CO₂-Preis auf Gas/Kohle
-#  ✓ Kapazitätsausbau mit Annuitäten (Greenfield-Optimierung)
-#  ✓ Monte-Carlo-Robustheitsprüfung über mehrere Wetterjahre
-#  ✓ Karte, Plots, PDF-Bericht
-#  ✓ Gurobi optional (WLS via .env), sonst HiGHS
+#  [OK] 5 Zonen: Nord, Ost, West, Sued, Offshore (Nordsee)
+#  [OK] Sektorkopplung: Wärmepumpen + Wärmespeicher (Nord, Ost, West, Sued)
+#  [OK] H₂-System: Elektrolyseur, H₂-Tank, Brennstoffzelle
+#  [OK] ERA5-Wetterdaten via atlite (echte deutsche Koordinaten) + Fallback
+#  [OK] CO₂-Budget (GlobalConstraint) + CO₂-Preis auf Gas/Kohle
+#  [OK] Kapazitätsausbau mit Annuitäten (Greenfield-Optimierung)
+#  [OK] Monte-Carlo-Robustheitsprüfung über mehrere Wetterjahre
+#  [OK] Karte, Plots, PDF-Bericht
+#  [OK] Gurobi optional (WLS via .env), sonst HiGHS
 #
 #  NEU gegenüber Lummerland:
-#  ✓ Als Modul importierbar (alle Läufe hinter Funktionen / __main__)
-#  ✓ Braunkohle (Ost), Steinkohle (West), Laufwasser + Pumpspeicher (Sued)
-#  ✓ Zeitauflösung wählbar (Standard 1h – Deutschland-Modell bleibt lösbar)
+#  [OK] Als Modul importierbar (alle Läufe hinter Funktionen / __main__)
+#  [OK] Braunkohle (Ost), Steinkohle (West), Laufwasser + Pumpspeicher (Sued)
+#  [OK] Zeitauflösung wählbar (Standard 1h – Deutschland-Modell bleibt lösbar)
 # =============================================================
 
 # ── stdlib ───────────────────────────────────────────────────
@@ -46,7 +46,7 @@ def _load_dotenv() -> None:
                 continue
             key, _, val = line.partition("=")
             os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
-    print("✓ .env geladen")
+    print("[OK] .env geladen")
 
 _load_dotenv()
 
@@ -90,12 +90,12 @@ except ValueError:
     GRB_LICENSEID = None
 
 import pypsa
-print(f"✓ PyPSA {pypsa.__version__}")
+print(f"[OK] PyPSA {pypsa.__version__}")
 
 try:
     import gurobipy as gp
     GUROBI_AVAILABLE = True
-    print(f"✓ Gurobi {gp.gurobi.version()}")
+    print(f"[OK] Gurobi {gp.gurobi.version()}")
 except Exception:
     GUROBI_AVAILABLE = False
     print("ℹ Gurobi nicht gefunden → HiGHS wird verwendet")
@@ -103,7 +103,7 @@ except Exception:
 try:
     import atlite
     ATLITE_AVAILABLE = True
-    print(f"✓ Atlite {atlite.__version__}")
+    print(f"[OK] Atlite {atlite.__version__}")
 except Exception:
     ATLITE_AVAILABLE = False
     print("ℹ Atlite nicht gefunden → synthetischer Fallback")
@@ -117,10 +117,13 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(ERA5_DIR, exist_ok=True)
 
 if CDS_KEY not in ("DEIN_API_KEY", ""):
-    with open(os.path.expanduser("~/.cdsapirc"), "w") as _f:
-        _f.write("url: https://cds.climate.copernicus.eu/api\n")
-        _f.write(f"key: {CDS_KEY}\n")
-    print("✓ CDS API Key konfiguriert")
+    try:
+        with open(os.path.expanduser("~/.cdsapirc"), "w") as _f:
+            _f.write("url: https://cds.climate.copernicus.eu/api\n")
+            _f.write(f"key: {CDS_KEY}\n")
+        print("[OK] CDS API Key konfiguriert")
+    except Exception as e:
+        print(f"[WARN] CDS Key Konfiguration fehlgeschlagen: {e}")
 
 # =============================================================
 #  2) GLOBALE PARAMETER  (Deutschland-Skala, alles in MW / MWh / t)
@@ -148,6 +151,14 @@ REGIONS = {
     "Sued": (11.3, 48.6, 0.24, 0.24),
 }
 OFFSHORE_POS = (7.0, 54.8)
+
+# Regionale Wetter-Skalierungen (Synthese): (wind_scale, wind_shift, solar_scale, solar_shift)
+REGION_WEATHER_FACTORS = {
+    "Nord": (1.00, 0, 0.85, 0),
+    "Ost":  (0.85, 2, 0.95, 1),
+    "West": (0.75, 4, 0.90, 1),
+    "Sued": (0.65, 6, 1.10, 2),
+}
 
 # ERA5-Boxen je Region: (x_min, x_max, y_min, y_max)
 ERA5_BOXES = {
@@ -232,6 +243,80 @@ ERA5_BOXES_NEIGHBORS = {
     "CH": ( 6.0, 10.0, 46.0, 47.5), "SE": (12.0, 18.0, 56.0, 60.0),
     "NO": ( 6.0, 11.0, 58.0, 62.0),
 }
+
+# ── Schritt 2: „ganz Europa" – zweiter Länderring (je 1 Knoten) ─────────
+#  Gleiche Struktur wie NEIGHBORS; einziger Unterschied: `zone` ist hier das
+#  PARTNERLAND (Kuppelstelle Land↔Land statt Land↔DE-Zone), z. B. ES↔FR.
+#  Reihenfolge so gewählt, dass der Partner-Bus beim Aufbau schon existiert
+#  (PT nach ES, IE nach GB, HR nach SI, BG nach RO, GR nach BG …).
+#  Flotten/Verbrauch: literaturbasierte Näherungen (~2023/24, ENTSO-E/IRENA),
+#  bewusst vereinfacht – siehe DOKUMENTATION (Ehrlichkeit/Grenzen).
+EUROPE2 = {
+    "ES": dict(x=-3.7, y=40.4, demand_twh=233, zone="FR", ntc=2800,
+               wind_k=0.95, solar_k=1.25,
+               fleet=dict(nuclear=7100, gas=30000, hydro=17000, wind=31000,
+                          solar=28000, hardcoal=500, biomass=1000)),
+    "PT": dict(x=-9.1, y=38.7, demand_twh= 51, zone="ES", ntc=3000,
+               wind_k=1.00, solar_k=1.20,
+               fleet=dict(hydro=7200, wind=5600, solar=4700, gas=4600,
+                          biomass=700)),
+    "IT": dict(x=12.5, y=41.9, demand_twh=300, zone="CH", ntc=4200,
+               wind_k=0.85, solar_k=1.15,
+               fleet=dict(gas=42000, hydro=19000, solar=30000, wind=12000,
+                          oil=1000, hardcoal=2000, biomass=3000)),
+    "GB": dict(x=-0.1, y=51.5, demand_twh=275, zone="FR", ntc=4000,
+               wind_k=1.15, solar_k=0.90,
+               fleet=dict(gas=30000, nuclear=5900, wind=30000, solar=15000,
+                          biomass=4000, hydro=1900)),
+    "IE": dict(x=-6.3, y=53.3, demand_twh= 33, zone="GB", ntc=1000,
+               wind_k=1.20, solar_k=0.85,
+               fleet=dict(gas=4500, wind=5000, solar=700, hydro=500, oil=300)),
+    "FI": dict(x=24.9, y=60.2, demand_twh= 82, zone="SE", ntc=2700,
+               wind_k=1.00, solar_k=0.70,
+               fleet=dict(nuclear=4400, hydro=3100, wind=6900, solar=900,
+                          biomass=2000, hardcoal=500)),
+    "SK": dict(x=17.1, y=48.2, demand_twh= 27, zone="CZ", ntc=2100,
+               wind_k=0.75, solar_k=0.95,
+               fleet=dict(nuclear=2700, gas=1000, hydro=1600, solar=500,
+                          lignite=200)),
+    "HU": dict(x=19.0, y=47.5, demand_twh= 43, zone="AT", ntc=900,
+               wind_k=0.75, solar_k=1.05,
+               fleet=dict(nuclear=2000, gas=4500, solar=5600, lignite=900,
+                          biomass=300)),
+    "SI": dict(x=14.5, y=46.1, demand_twh= 13, zone="AT", ntc=950,
+               wind_k=0.70, solar_k=1.05,
+               fleet=dict(nuclear=700, hydro=1300, gas=500, lignite=900,
+                          solar=700)),
+    "HR": dict(x=16.0, y=45.8, demand_twh= 17, zone="SI", ntc=1000,
+               wind_k=0.90, solar_k=1.10,
+               fleet=dict(hydro=2200, gas=800, wind=1100, solar=800, oil=300)),
+    "RO": dict(x=26.1, y=44.4, demand_twh= 50, zone="HU", ntc=1000,
+               wind_k=0.90, solar_k=1.10,
+               fleet=dict(hydro=6600, nuclear=1400, gas=3000, lignite=3000,
+                          wind=3000, solar=2000)),
+    "BG": dict(x=23.3, y=42.7, demand_twh= 34, zone="RO", ntc=1000,
+               wind_k=0.80, solar_k=1.15,
+               fleet=dict(nuclear=2000, lignite=3800, hydro=3200, solar=3000,
+                          wind=700)),
+    "GR": dict(x=23.7, y=38.0, demand_twh= 51, zone="BG", ntc=800,
+               wind_k=0.95, solar_k=1.25,
+               fleet=dict(gas=5200, lignite=1200, hydro=3400, wind=5200,
+                          solar=7000, oil=800)),
+}
+
+# Alle Auslandsknoten zusammen (für GUI/Karte/Auswertung)
+ALL_FOREIGN = {**NEIGHBORS, **EUROPE2}
+
+ERA5_BOXES_EUROPE = {
+    "ES": (-8.5,  2.5, 36.5, 43.0), "PT": (-9.5, -6.5, 37.0, 42.0),
+    "IT": ( 8.0, 17.0, 38.0, 46.0), "GB": (-5.5,  1.5, 50.5, 57.5),
+    "IE": (-10.0, -6.0, 51.5, 55.0), "FI": (21.0, 29.0, 60.0, 65.0),
+    "SK": (17.0, 22.0, 47.8, 49.5), "HU": (16.0, 22.5, 45.8, 48.5),
+    "SI": (13.5, 16.5, 45.4, 46.9), "HR": (13.5, 18.5, 42.5, 46.5),
+    "RO": (20.5, 29.5, 43.5, 48.0), "BG": (22.5, 28.5, 41.0, 44.0),
+    "GR": (20.0, 26.5, 35.0, 41.5),
+}
+ERA5_BOXES_FOREIGN = {**ERA5_BOXES_NEIGHBORS, **ERA5_BOXES_EUROPE}
 
 # =============================================================
 #  3) ANNUITÄTEN & KOSTEN
@@ -329,11 +414,13 @@ def _era5_region(box, need_pv=True, concurrent=False):
     return wind[::TIME_RES][:HOURS], (pv[::TIME_RES][:HOURS] if pv is not None else None)
 
 def make_profiles(mc_seed: int | None = None,
-                  foreign_era5: bool = False) -> tuple[dict, bool]:
+                  foreign_era5: bool = False,
+                  include_europe: bool = False) -> tuple[dict, bool]:
     """Erzeugt Wetterprofile je Region.
     mc_seed=None  → ERA5 falls verfügbar, sonst synthetisch.
     mc_seed=i     → synthetisches Monte-Carlo-Wetterjahr i.
-    foreign_era5  → Nachbarländer ebenfalls aus ERA5 (statt synthetisch)."""
+    foreign_era5  → Nachbarländer ebenfalls aus ERA5 (statt synthetisch).
+    include_europe → zusätzlich Profile für den 2. Länderring (EUROPE2)."""
     prof: dict[str, np.ndarray] = {}
     i = 0 if mc_seed is None else mc_seed
     era5_ok = False
@@ -344,7 +431,7 @@ def make_profiles(mc_seed: int | None = None,
                 w, s = _era5_region(ERA5_BOXES[reg], need_pv=True)
                 prof[f"wind_{reg}"], prof[f"solar_{reg}"] = w, s
             prof["wind_Offshore"], _ = _era5_region(ERA5_BOXES["Offshore"], need_pv=False)
-            print("✓ ERA5-Daten geladen")
+            print("[OK] ERA5-Daten geladen")
             era5_ok = True
         except Exception as e:
             print(f"[atlite] Fehler: {e} → synthetischer Fallback")
@@ -352,10 +439,7 @@ def make_profiles(mc_seed: int | None = None,
         s, w, wo = _synthetic_base(i * 17 + 3, i * 31 + 7, i * 17 + 102)
         prof["wind_Offshore"] = wo
         # Regionale Charakteristik: Nord windig, Süd sonnig
-        for reg, (wsc, wsh, ssc, ssh) in {
-            "Nord": (1.00, 0, 0.85, 0), "Ost":  (0.85, 2, 0.95, 1),
-            "West": (0.75, 4, 0.90, 1), "Sued": (0.65, 6, 1.10, 2),
-        }.items():
+        for reg, (wsc, wsh, ssc, ssh) in REGION_WEATHER_FACTORS.items():
             prof[f"wind_{reg}"]  = _shift_profile(w, wsh, wsc, 0.05, seed=i * 7 + wsh)
             prof[f"solar_{reg}"] = _shift_profile(s, ssh, ssc, 0.04, seed=i * 7 + 50 + ssh)
 
@@ -366,12 +450,13 @@ def make_profiles(mc_seed: int | None = None,
     use_foreign_era5 = foreign_era5 and mc_seed is None and ATLITE_AVAILABLE
     if use_foreign_era5:
         print("[atlite] Lade ERA5 für Nachbarländer (erster Lauf lädt via CDS) …")
-    for k, (cc, d) in enumerate(NEIGHBORS.items()):
-        if use_foreign_era5 and cc in ERA5_BOXES_NEIGHBORS:
+    countries = ALL_FOREIGN if include_europe else NEIGHBORS
+    for k, (cc, d) in enumerate(countries.items()):
+        if use_foreign_era5 and cc in ERA5_BOXES_FOREIGN:
             try:
-                w_cc, s_cc = _era5_region(ERA5_BOXES_NEIGHBORS[cc], need_pv=True)
+                w_cc, s_cc = _era5_region(ERA5_BOXES_FOREIGN[cc], need_pv=True)
                 prof[f"wind_{cc}"], prof[f"solar_{cc}"] = w_cc, s_cc
-                print(f"  ✓ ERA5 {cc}")
+                print(f"  [OK] ERA5 {cc}")
                 continue
             except Exception as e:
                 print(f"  [atlite] {cc}: {e} → synthetisch")
@@ -401,12 +486,14 @@ def make_loads(load_scale=1.0, heat_scale=1.0, mc_seed=None) -> dict[str, np.nda
 #  5) HILFSFUNKTIONEN
 # =============================================================
 def _pnom(comp_df, name) -> float:
+    """Optimierte Nennleistung einer Komponente (p_nom_opt oder p_nom fallback)."""
     row = comp_df.loc[name]
     return max(0., float(row.get("p_nom_opt", row["p_nom"])))
 
 BG, BGMAP, LAND, SHORE = "#0d1b2a", "#0a2540", "#4a7c2f", "#d9c98a"
 
 def _style_ax(ax, title, xlabel="", ylabel="", bg_inner="#1a2a3a"):
+    """Wendet einheitlichen Dark-Theme-Stil auf eine matplotlib-Achse an."""
     ax.set_facecolor(bg_inner)
     ax.tick_params(colors="white")
     ax.set_title(title, color="white", fontsize=10, fontweight="bold")
@@ -422,9 +509,12 @@ def build_network(prof: dict, loads: dict,
                   co2_budget: float = CO2_BUDGET,
                   co2_price: float = CO2_PRICE,
                   gas_price: float = 55.0,
-                  include_neighbors: bool = False) -> "pypsa.Network":
+                  include_neighbors: bool = False,
+                  include_europe: bool = False) -> "pypsa.Network":
     """Baut das 5-Zonen-Deutschland-Netz mit Sektorkopplung.
-    include_neighbors=True koppelt zusätzlich die Nachbarländer (je 1 Knoten)."""
+    include_neighbors=True koppelt zusätzlich die Nachbarländer (je 1 Knoten).
+    include_europe=True   koppelt darüber hinaus den 2. Länderring (EUROPE2,
+    Kuppelstelle jeweils ans Partnerland) – erfordert include_neighbors."""
     OP = opex(co2_price, gas_price)
     net = pypsa.Network()
     net.set_snapshots(snapshots)
@@ -542,7 +632,8 @@ def build_network(prof: dict, loads: dict,
             "biomass":  ("biomass",  "Biomass",  1.00),
             "hydro":    ("hydro",    "Hydro",    0.50),
         }
-        for cc, d in NEIGHBORS.items():
+        countries = ALL_FOREIGN if include_europe else NEIGHBORS
+        for cc, d in countries.items():
             net.add("Bus", cc, v_nom=380., carrier="AC", x=d["x"], y=d["y"])
             avg_mw = d["demand_twh"] * 1e6 / (HOURS * TIME_RES)
             net.add("Load", f"Last_{cc}", bus=cc,
@@ -595,6 +686,7 @@ USE_GUROBI  = GUROBI_AVAILABLE and GRB_WLSACCESSID not in ("DEINE_ACCESS_ID", ""
 _gurobi_env = None
 
 def _get_gurobi_env():
+    """Erzeugt oder gibt gecachte Gurobi-Umgebung mit WLS-Credentials zurück."""
     global _gurobi_env
     if _gurobi_env is None:
         _gurobi_env = gp.Env(params={
@@ -892,41 +984,54 @@ def neighbor_net_import_twh(net) -> pd.Series:
 def run_base(co2_budget=CO2_BUDGET, co2_price=CO2_PRICE,
              load_scale=1.0, heat_scale=1.0,
              discount_rate=None, gas_price=55.0,
-             include_neighbors=False, foreign_era5=False, verbose=True):
+             include_neighbors=False, foreign_era5=False, verbose=True,
+             progress=None, include_europe=False):
     """Baut, löst und liefert (Netz, ERA5-Flag).
 
     discount_rate     = WACC (z. B. 0.07); None → globaler Standard.
     gas_price         = Gas-Brennstoffkosten [€/MWh_th].
     include_neighbors = Nachbarländer koppeln (je 1 Knoten).
+    include_europe    = zusätzlich 2. Länderring (nur mit include_neighbors).
     foreign_era5      = Auslandswetter aus ERA5 (statt synthetisch)."""
+    include_europe = include_europe and include_neighbors
     global DISCOUNT_RATE
     _prev_dr = DISCOUNT_RATE
     if discount_rate is not None:
         DISCOUNT_RATE = float(discount_rate)
     try:
-        prof, era5_ok = make_profiles(foreign_era5=foreign_era5)
+        if progress: progress(0.05, "🌦 Wetterprofile laden …")
+        prof, era5_ok = make_profiles(foreign_era5=foreign_era5,
+                                      include_europe=include_europe)
+        if progress: progress(0.30, "🔌 Lastprofile berechnen …")
         loads = make_loads(load_scale, heat_scale)
+        if progress: progress(0.40, "🏗️ Netz aufbauen …")
         net = build_network(prof, loads, co2_budget, co2_price, gas_price,
-                            include_neighbors=include_neighbors)
+                            include_neighbors=include_neighbors,
+                            include_europe=include_europe)
+        if progress: progress(0.55, "⚙️ Solver läuft (kann etwas dauern) …")
         try:
             gur = solve_network(net, verbose)
         except Exception as e:
             print(f"⚠ Solver: {e} → 6h-Fallback")
+            if progress: progress(0.65, "⚙️ Solver-Fallback (6h-Auflösung) …")
             net.set_snapshots(net.snapshots[::2])
             gur = solve_network(net, verbose)
+        if progress: progress(1.0, "[OK] fertig")
     finally:
         DISCOUNT_RATE = _prev_dr   # globalen WACC wiederherstellen
     if verbose:
-        print("✓ Gurobi" if gur else "✓ HiGHS",
+        print("[OK] Gurobi" if gur else "[OK] HiGHS",
               f"| {total_cost(net)/1e9:.2f} Mrd €/a "
               f"| CO₂(DE) {total_co2(net, DE_AC_BUSES)/1e6:.1f} Mt")
     return net, era5_ok
 
 def run_monte_carlo(n_mc=N_MC, co2_budget=CO2_BUDGET, co2_price=CO2_PRICE,
-                    include_neighbors=False):
+                    include_neighbors=False, progress=None):
     """MC über synthetische Wetterjahre → DataFrame."""
     rows = []
     for i in range(n_mc):
+        if progress:
+            progress(i / max(n_mc, 1), f"🎲 Wetterjahr {i+1}/{n_mc} …")
         try:
             prof, _ = make_profiles(mc_seed=i)
             loads = make_loads(mc_seed=i)
@@ -936,12 +1041,62 @@ def run_monte_carlo(n_mc=N_MC, co2_budget=CO2_BUDGET, co2_price=CO2_PRICE,
             rows.append(dict(Jahr=i + 1, Kosten_MrdEa=total_cost(nm) / 1e9,
                              CO2_Mt=total_co2(nm, DE_AC_BUSES) / 1e6,
                              RE_Anteil_pct=re_share(nm, DE_AC_BUSES),
-                             Status="✓ OK"))
+                             Status="[OK] OK"))
             print(f"  MC {i+1}/{n_mc}: {rows[-1]['Kosten_MrdEa']:.2f} Mrd €/a "
                   f"| CO₂ {rows[-1]['CO2_Mt']:.1f} Mt | EE {rows[-1]['RE_Anteil_pct']:.1f}%")
         except Exception as e:
             rows.append(dict(Jahr=i + 1, Kosten_MrdEa=np.nan, CO2_Mt=np.nan,
                              RE_Anteil_pct=np.nan, Status=f"✗ {e}"))
+    if progress:
+        progress(1.0, "[OK] fertig")
+    return pd.DataFrame(rows)
+
+def run_co2_sweep(prices=None, co2_budget=CO2_BUDGET, include_neighbors=False,
+                  verbose=False, progress=None, **run_kwargs):
+    """CO₂-Preis-Sensitivität: pro Preis ein eigener Optimierungslauf.
+
+    Für jeden CO₂-Preis wird run_base() mit exakt denselben Bauwegen wie im
+    Standardlauf aufgerufen (ergebnisneutral gegenüber run_base). Gesammelt
+    werden Systemkosten, CO₂-Ausstoß, EE-Anteil und die optimierten
+    Kapazitäten je Erzeugungsträger (in GW).
+
+    prices            = Liste von CO₂-Preisen [€/tCO₂]; None → Default-Raster.
+    **run_kwargs      = weitergereicht an run_base (z. B. load_scale, gas_price,
+                        discount_rate, foreign_era5, include_europe).
+    Rückgabe          = pd.DataFrame, eine Zeile je Preis. Fehler pro Preis
+                        werden abgefangen (NaN + Status), der Lauf läuft weiter.
+    """
+    if prices is None:
+        prices = [0, 50, 100, 150, 200, 300]
+    rows = []
+    n_p = len(prices)
+    for i, p in enumerate(prices):
+        if progress:
+            progress(i / max(n_p, 1), f"💨 CO₂-Preis {p:.0f} €/t ({i+1}/{n_p}) …")
+        try:
+            net, _ = run_base(co2_price=float(p), co2_budget=co2_budget,
+                              include_neighbors=include_neighbors,
+                              verbose=False, **run_kwargs)
+            row = dict(CO2_Preis_EUR_t=float(p),
+                       Kosten_MrdEa=total_cost(net) / 1e9,
+                       CO2_Mt=total_co2(net, DE_AC_BUSES) / 1e6,
+                       RE_Anteil_pct=re_share(net, DE_AC_BUSES),
+                       Status="[OK] OK")
+            # Kapazitäten je Carrier in GW (Summe der optimierten Nennleistung)
+            for g in net.generators.index:
+                car = net.generators.carrier[g]
+                col = f"Kap_{car}_GW"
+                row[col] = row.get(col, 0.0) + _pnom(net.generators, g) / 1000.
+            rows.append(row)
+            if verbose:
+                print(f"  CO₂-Preis {p:.0f} €/t: {row['Kosten_MrdEa']:.2f} Mrd €/a "
+                      f"| CO₂ {row['CO2_Mt']:.1f} Mt | EE {row['RE_Anteil_pct']:.1f}%")
+        except Exception as e:
+            rows.append(dict(CO2_Preis_EUR_t=float(p), Kosten_MrdEa=np.nan,
+                             CO2_Mt=np.nan, RE_Anteil_pct=np.nan,
+                             Status=f"✗ {e}"))
+    if progress:
+        progress(1.0, "[OK] fertig")
     return pd.DataFrame(rows)
 
 # =============================================================
@@ -1002,6 +1157,45 @@ def plot_storage_prices(net, path):
     net.buses_t.marginal_price[list(REGIONS)].plot(ax=a3, lw=0.6)
     _style_ax(a3, "Regionale Strompreise", ylabel="€/MWh")
     a3.legend(fontsize=8, facecolor="#1a2a3a", labelcolor="w")
+    fig.tight_layout()
+    plt.savefig(path, dpi=150, facecolor=BG, bbox_inches="tight"); plt.close()
+
+def plot_co2_sweep(df, path):
+    """Plot D: CO₂-Preis-Sensitivität.
+
+    Oben: Systemkosten, CO₂-Ausstoß und EE-Anteil über den CO₂-Preis.
+    Unten: optimierte Kapazitäten je Erzeugungsträger über den CO₂-Preis.
+    Erwartet den DataFrame aus run_co2_sweep()."""
+    d = df.dropna(subset=["Kosten_MrdEa"]).sort_values("CO2_Preis_EUR_t")
+    x = d["CO2_Preis_EUR_t"]
+    fig, (a1, a3) = plt.subplots(2, 1, figsize=(14, 10))
+    fig.patch.set_facecolor(BG)
+
+    # --- oben: Kosten (links) + CO₂ und EE-Anteil (rechts) ---
+    a1.plot(x, d["Kosten_MrdEa"], "o-", color="#4A90D9", lw=2, label="Systemkosten")
+    _style_ax(a1, "Kosten, CO₂ und EE-Anteil über CO₂-Preis",
+              xlabel="CO₂-Preis [€/tCO₂]", ylabel="Mrd €/a")
+    a2 = a1.twinx()
+    a2.plot(x, d["CO2_Mt"], "s--", color="#E8734C", lw=2, label="CO₂-Ausstoß")
+    a2.plot(x, d["RE_Anteil_pct"], "^:", color="#3FBFB2", lw=2, label="EE-Anteil")
+    a2.set_ylabel("CO₂ [Mt/a]  ·  EE-Anteil [%]", color="white")
+    a2.tick_params(colors="white")
+    for sp in a2.spines.values():
+        sp.set_edgecolor("#444")
+    h1, l1 = a1.get_legend_handles_labels()
+    h2, l2 = a2.get_legend_handles_labels()
+    a1.legend(h1 + h2, l1 + l2, loc="best", fontsize=8,
+              facecolor="#1a2a3a", labelcolor="w")
+
+    # --- unten: Kapazitäten je Carrier ---
+    kap_cols = [c for c in d.columns if c.startswith("Kap_") and c.endswith("_GW")]
+    for c in kap_cols:
+        car = c[len("Kap_"):-len("_GW")]
+        a3.plot(x, d[c], "o-", lw=2, label=car,
+                color=CARRIER_COLORS.get(car, "#999"))
+    _style_ax(a3, "Optimierte Kapazitäten je Träger über CO₂-Preis",
+              xlabel="CO₂-Preis [€/tCO₂]", ylabel="GW")
+    a3.legend(fontsize=8, facecolor="#1a2a3a", labelcolor="w", ncol=2)
     fig.tight_layout()
     plt.savefig(path, dpi=150, facecolor=BG, bbox_inches="tight"); plt.close()
 
@@ -1102,7 +1296,7 @@ def plot_map(net, path, era5_ok):
               loc="lower right", facecolor="#1a2a3a", labelcolor="white",
               fontsize=9, framealpha=0.9)
     ax.set_title(f"DEUTSCHLAND v1.0 – 5-Zonen-Modell  |  "
-                 f"{'✓ ERA5-Daten' if era5_ok else '⚠ Synthetische Daten'}",
+                 f"{'[OK] ERA5-Daten' if era5_ok else '⚠ Synthetische Daten'}",
                  fontsize=14, fontweight="bold", color="white", pad=15)
     fig.tight_layout()
     plt.savefig(path, dpi=150, bbox_inches="tight", facecolor=BGMAP); plt.close()
@@ -1181,7 +1375,7 @@ if __name__ == "__main__":
         print(f"   {k:<10}: {capex_annual(k):>10,.0f}")
 
     n, era5_ok = run_base()
-    print(f"\n✓ Optimierung fertig → {n.objective/1e9:.2f} Mrd €/a "
+    print(f"\n[OK] Optimierung fertig → {n.objective/1e9:.2f} Mrd €/a "
           f"| CO₂ {total_co2(n)/1e6:.1f} Mt | EE {re_share(n):.1f}%\n")
     for g in n.generators.index:
         print(f"  {g:<22} {_pnom(n.generators, g)/1000:>7.1f} GW")
@@ -1191,15 +1385,25 @@ if __name__ == "__main__":
     print("=" * 55)
     mc_df = run_monte_carlo()
 
+    # Opt-in: CO₂-Preis-Sensitivität nur bei CO2_SWEEP=1 (Standardlauf bleibt unverändert)
+    if os.environ.get("CO2_SWEEP") == "1":
+        print("\n" + "=" * 55)
+        print(" CO₂-Preis-Sensitivität (opt-in via CO2_SWEEP=1)")
+        print("=" * 55)
+        sweep_df = run_co2_sweep(verbose=True)
+        _ps = os.path.join(OUTPUT_DIR, "deutschland_v1_co2_sweep.png")
+        plot_co2_sweep(sweep_df, _ps)
+        print(f"  [OK] {_ps}")
+
     print("\n Erstelle Plots …")
     _pa = os.path.join(OUTPUT_DIR, "deutschland_v1_dispatch.png")
     _pb = os.path.join(OUTPUT_DIR, "deutschland_v1_kapazitaeten.png")
     _pc = os.path.join(OUTPUT_DIR, "deutschland_v1_speicher_preise.png")
     _pm = os.path.join(OUTPUT_DIR, "deutschland_v1_karte.png")
-    plot_dispatch(n, _pa);        print(f"  ✓ {_pa}")
-    plot_capacities(n, _pb);      print(f"  ✓ {_pb}")
-    plot_storage_prices(n, _pc);  print(f"  ✓ {_pc}")
-    plot_map(n, _pm, era5_ok);    print(f"  ✓ {_pm}")
+    plot_dispatch(n, _pa);        print(f"  [OK] {_pa}")
+    plot_capacities(n, _pb);      print(f"  [OK] {_pb}")
+    plot_storage_prices(n, _pc);  print(f"  [OK] {_pc}")
+    plot_map(n, _pm, era5_ok);    print(f"  [OK] {_pm}")
 
     pdf_path = os.path.join(OUTPUT_DIR, "Deutschland_v1_Bericht.pdf")
     make_pdf(n, mc_df, {"Karte": _pm, "Dispatch": _pa,
