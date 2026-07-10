@@ -1,0 +1,8 @@
+{
+  // VS Code schlaegt diese Extensions beim Oeffnen des Workspaces vor
+  // (erzwingt nichts).
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.vscode-pylance"
+  ]
+}

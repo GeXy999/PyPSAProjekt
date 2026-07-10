@@ -1,0 +1,8 @@
+# Natives Streamlit-Theme (Basis) – die Feinpolitur macht das CSS in deutschland_gui.py
+[theme]
+base = "dark"
+primaryColor = "#4A90D9"            # Energie-Blau (Buttons, Slider, Fokus)
+backgroundColor = "#0d1b2a"         # tiefes Marineblau (Modell-Palette)
+secondaryBackgroundColor = "#132a40" # Karten / Sidebar
+textColor = "#e6edf3"
+font = "sans serif"

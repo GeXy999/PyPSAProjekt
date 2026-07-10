@@ -1,0 +1,45 @@
+{
+  // Benannte Befehle: Strg+Shift+P -> "Tasks: Run Task" -> auswaehlen.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "🚀 App starten (Streamlit)",
+      "type": "shell",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\streamlit.exe",
+      "args": ["run", "deutschland_gui.py"],
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "detail": "Startet das Dashboard im integrierten Terminal (Ctrl+C zum Stoppen)."
+    },
+    {
+      "label": "🛑 App stoppen",
+      "type": "shell",
+      "command": "${workspaceFolder}\\launcher\\stop_app.bat",
+      "problemMatcher": [],
+      "detail": "Beendet eine versteckt (per Desktop-Icon) laufende GUI."
+    },
+    {
+      "label": "📊 Download-Status (ERA5-Nachbarn)",
+      "type": "shell",
+      "command": "${workspaceFolder}\\launcher\\check_download.bat",
+      "problemMatcher": [],
+      "detail": "Zeigt, wie viele der 11 Nachbar-Cutouts fertig sind."
+    },
+    {
+      "label": "🕸️ Graphify-Update (code-only)",
+      "type": "shell",
+      "command": "C:\\Users\\FoProServer\\AppData\\Roaming\\uv\\tools\\graphifyy\\Scripts\\graphify.exe",
+      "args": ["${workspaceFolder}", "--update", "--code-only"],
+      "problemMatcher": [],
+      "detail": "Inkrementelles Update des Knowledge-Graphen (nur Code, kein LLM)."
+    },
+    {
+      "label": "🐍 Syntax-Check (py_compile)",
+      "type": "shell",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "py_compile", "deutschland_v1.py", "deutschland_gui.py"],
+      "problemMatcher": [],
+      "detail": "Schneller Syntax-Check beider Quelldateien."
+    }
+  ]
+}

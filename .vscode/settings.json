@@ -1,0 +1,20 @@
+{
+  // Projektlokale Einstellungen (nur dieser Workspace).
+  // Wichtigster Punkt: immer den venv-Python nutzen -> verhindert
+  // "No module named pypsa"-Fehler durch einen falschen Interpreter.
+  "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+  "python.terminal.activateEnvironment": true,
+
+  // Explorer aufgeraeumt halten
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true
+  },
+
+  // Orientierungslinien; Format-on-Save BEWUSST aus (kein Auto-Reformat
+  // des kompakt gehaltenen Codes)
+  "editor.rulers": [88, 100],
+  "[python]": {
+    "editor.formatOnSave": false
+  }
+}
