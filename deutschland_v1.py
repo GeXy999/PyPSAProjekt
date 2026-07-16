@@ -304,8 +304,66 @@ EUROPE2 = {
                           solar=7000, oil=800)),
 }
 
-# Alle Auslandsknoten zusammen (für GUI/Karte/Auswertung)
-ALL_FOREIGN = {**NEIGHBORS, **EUROPE2}
+# ── Kreis 3: 12 weitere europäische Länder – dritter Länderring ────────────
+#  Gleiche Struktur wie EUROPE2; `zone` = Partnerland (Kuppelstelle Land↔Land).
+#  Reihenfolge so, dass der Partner-Bus beim Aufbau schon existiert:
+#  EE→FI, LV→EE, LT→PL, RS→HU, BA→HR, ME/MK/XK→RS, AL→GR, MD→RO, UA→PL.
+#  Alle liegen im ENTSO-E-Verbundnetz (Baltikum + Westbalkan seit 2025/lange,
+#  MD/UA seit 2022 synchron mit Kontinentaleuropa). Flotten/Verbrauch:
+#  literaturbasierte Näherungen (~2023, ENTSO-E/IRENA) – bewusst vereinfacht.
+#  UA im Kriegskontext → Werte besonders unsicher (Vorkriegs-Größenordnung).
+EUROPE3 = {
+    # Baltikum
+    "EE": dict(x=25.0, y=59.0, demand_twh=  8, zone="FI", ntc=1000,
+               wind_k=1.05, solar_k=0.80,
+               fleet=dict(oil=2000, wind=400, solar=500, biomass=300)),
+    "LV": dict(x=24.1, y=56.9, demand_twh=  7, zone="EE", ntc=1000,
+               wind_k=1.05, solar_k=0.80,
+               fleet=dict(hydro=1600, gas=1000, wind=150, biomass=200)),
+    "LT": dict(x=25.3, y=54.7, demand_twh= 11, zone="PL", ntc=1300,
+               wind_k=1.10, solar_k=0.85,
+               fleet=dict(gas=1000, wind=800, hydro=900, solar=300, biomass=100)),
+    # Westbalkan
+    "RS": dict(x=20.5, y=44.8, demand_twh= 35, zone="HU", ntc=1000,
+               wind_k=0.85, solar_k=1.15,
+               fleet=dict(lignite=4000, hydro=3000, gas=300, wind=400, solar=100)),
+    "BA": dict(x=17.8, y=43.9, demand_twh= 13, zone="HR", ntc=800,
+               wind_k=0.80, solar_k=1.15,
+               fleet=dict(lignite=2000, hydro=2000, wind=300, solar=50)),
+    "ME": dict(x=19.3, y=42.4, demand_twh=  3, zone="RS", ntc=600,
+               wind_k=0.80, solar_k=1.20,
+               fleet=dict(hydro=700, lignite=200, wind=120, solar=50)),
+    "MK": dict(x=21.7, y=41.6, demand_twh=  7, zone="RS", ntc=800,
+               wind_k=0.75, solar_k=1.20,
+               fleet=dict(lignite=800, hydro=700, gas=300, solar=100, wind=40)),
+    "AL": dict(x=19.8, y=41.3, demand_twh=  7, zone="GR", ntc=500,
+               wind_k=0.80, solar_k=1.25,
+               fleet=dict(hydro=2100, solar=150, wind=40)),
+    "XK": dict(x=21.0, y=42.6, demand_twh=  6, zone="RS", ntc=500,
+               wind_k=0.80, solar_k=1.15,
+               fleet=dict(lignite=1300, hydro=100, solar=30, wind=140)),
+    # Osteuropa
+    "MD": dict(x=28.9, y=47.0, demand_twh=  5, zone="RO", ntc=700,
+               wind_k=0.85, solar_k=1.10,
+               fleet=dict(gas=2500, hydro=60, solar=50, wind=150)),
+    "UA": dict(x=30.5, y=50.4, demand_twh=120, zone="PL", ntc=2000,
+               wind_k=1.00, solar_k=1.10,
+               fleet=dict(nuclear=13000, lignite=20000, hydro=6000, gas=2000,
+                          wind=1700, solar=8000, biomass=200)),
+}
+
+# Alle Auslandsknoten zusammen (für GUI/Karte/Auswertung – Superset aller Kreise)
+ALL_FOREIGN = {**NEIGHBORS, **EUROPE2, **EUROPE3}
+
+def _foreign_set(include_europe: bool, include_kreis3: bool = False) -> dict:
+    """Aktive Auslandsknoten je nach Kopplungstiefe. Verhaltensneutral zu früher:
+    ohne Kreis 3 identisch zu {NEIGHBORS (+ EUROPE2 falls include_europe)}."""
+    d = dict(NEIGHBORS)
+    if include_europe:
+        d.update(EUROPE2)
+    if include_kreis3:
+        d.update(EUROPE3)
+    return d
 
 ERA5_BOXES_EUROPE = {
     "ES": (-8.5,  2.5, 36.5, 43.0), "PT": (-9.5, -6.5, 37.0, 42.0),
@@ -316,7 +374,16 @@ ERA5_BOXES_EUROPE = {
     "RO": (20.5, 29.5, 43.5, 48.0), "BG": (22.5, 28.5, 41.0, 44.0),
     "GR": (20.0, 26.5, 35.0, 41.5),
 }
-ERA5_BOXES_FOREIGN = {**ERA5_BOXES_NEIGHBORS, **ERA5_BOXES_EUROPE}
+ERA5_BOXES_EUROPE3 = {
+    "EE": (22.0, 28.2, 57.5, 59.7), "LV": (21.0, 28.2, 55.7, 58.1),
+    "LT": (21.0, 26.9, 53.9, 56.5), "RS": (18.8, 23.0, 42.2, 46.2),
+    "BA": (15.7, 19.7, 42.5, 45.3), "ME": (18.4, 20.4, 41.8, 43.6),
+    "MK": (20.4, 23.1, 40.8, 42.4), "AL": (19.2, 21.1, 39.6, 42.7),
+    "XK": (20.0, 21.8, 41.8, 43.3), "MD": (26.6, 30.2, 45.4, 48.5),
+    "UA": (22.1, 40.2, 44.3, 52.4),
+}
+ERA5_BOXES_FOREIGN = {**ERA5_BOXES_NEIGHBORS, **ERA5_BOXES_EUROPE,
+                      **ERA5_BOXES_EUROPE3}
 
 # =============================================================
 #  3) ANNUITÄTEN & KOSTEN
@@ -415,7 +482,8 @@ def _era5_region(box, need_pv=True, concurrent=False):
 
 def make_profiles(mc_seed: int | None = None,
                   foreign_era5: bool = False,
-                  include_europe: bool = False) -> tuple[dict, bool]:
+                  include_europe: bool = False,
+                  include_kreis3: bool = False) -> tuple[dict, bool]:
     """Erzeugt Wetterprofile je Region.
     mc_seed=None  → ERA5 falls verfügbar, sonst synthetisch.
     mc_seed=i     → synthetisches Monte-Carlo-Wetterjahr i.
@@ -450,7 +518,7 @@ def make_profiles(mc_seed: int | None = None,
     use_foreign_era5 = foreign_era5 and mc_seed is None and ATLITE_AVAILABLE
     if use_foreign_era5:
         print("[atlite] Lade ERA5 für Nachbarländer (erster Lauf lädt via CDS) …")
-    countries = ALL_FOREIGN if include_europe else NEIGHBORS
+    countries = _foreign_set(include_europe, include_kreis3)
     for k, (cc, d) in enumerate(countries.items()):
         if use_foreign_era5 and cc in ERA5_BOXES_FOREIGN:
             try:
@@ -510,7 +578,8 @@ def build_network(prof: dict, loads: dict,
                   co2_price: float = CO2_PRICE,
                   gas_price: float = 55.0,
                   include_neighbors: bool = False,
-                  include_europe: bool = False) -> "pypsa.Network":
+                  include_europe: bool = False,
+                  include_kreis3: bool = False) -> "pypsa.Network":
     """Baut das 5-Zonen-Deutschland-Netz mit Sektorkopplung.
     include_neighbors=True koppelt zusätzlich die Nachbarländer (je 1 Knoten).
     include_europe=True   koppelt darüber hinaus den 2. Länderring (EUROPE2,
@@ -632,7 +701,7 @@ def build_network(prof: dict, loads: dict,
             "biomass":  ("biomass",  "Biomass",  1.00),
             "hydro":    ("hydro",    "Hydro",    0.50),
         }
-        countries = ALL_FOREIGN if include_europe else NEIGHBORS
+        countries = _foreign_set(include_europe, include_kreis3)
         for cc, d in countries.items():
             net.add("Bus", cc, v_nom=380., carrier="AC", x=d["x"], y=d["y"])
             avg_mw = d["demand_twh"] * 1e6 / (HOURS * TIME_RES)
@@ -985,15 +1054,17 @@ def run_base(co2_budget=CO2_BUDGET, co2_price=CO2_PRICE,
              load_scale=1.0, heat_scale=1.0,
              discount_rate=None, gas_price=55.0,
              include_neighbors=False, foreign_era5=False, verbose=True,
-             progress=None, include_europe=False):
+             progress=None, include_europe=False, include_kreis3=False):
     """Baut, löst und liefert (Netz, ERA5-Flag).
 
     discount_rate     = WACC (z. B. 0.07); None → globaler Standard.
     gas_price         = Gas-Brennstoffkosten [€/MWh_th].
     include_neighbors = Nachbarländer koppeln (je 1 Knoten).
     include_europe    = zusätzlich 2. Länderring (nur mit include_neighbors).
+    include_kreis3    = zusätzlich 3. Länderring (nur mit include_europe).
     foreign_era5      = Auslandswetter aus ERA5 (statt synthetisch)."""
     include_europe = include_europe and include_neighbors
+    include_kreis3 = include_kreis3 and include_europe
     global DISCOUNT_RATE
     _prev_dr = DISCOUNT_RATE
     if discount_rate is not None:
@@ -1001,13 +1072,15 @@ def run_base(co2_budget=CO2_BUDGET, co2_price=CO2_PRICE,
     try:
         if progress: progress(0.05, "🌦 Wetterprofile laden …")
         prof, era5_ok = make_profiles(foreign_era5=foreign_era5,
-                                      include_europe=include_europe)
+                                      include_europe=include_europe,
+                                      include_kreis3=include_kreis3)
         if progress: progress(0.30, "🔌 Lastprofile berechnen …")
         loads = make_loads(load_scale, heat_scale)
         if progress: progress(0.40, "🏗️ Netz aufbauen …")
         net = build_network(prof, loads, co2_budget, co2_price, gas_price,
                             include_neighbors=include_neighbors,
-                            include_europe=include_europe)
+                            include_europe=include_europe,
+                            include_kreis3=include_kreis3)
         if progress: progress(0.55, "⚙️ Solver läuft (kann etwas dauern) …")
         try:
             gur = solve_network(net, verbose)

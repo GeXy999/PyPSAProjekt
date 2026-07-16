@@ -141,7 +141,7 @@ if _light:
 st.markdown("""
 <div class="de-hero">
   <h1>⚡ Deutschland Energy Model
-      <span style="color:#9fc3e8;font-weight:600;font-size:1rem;">v1.2</span></h1>
+      <span style="color:#9fc3e8;font-weight:600;font-size:1rem;">v1.3</span></h1>
   <div class="sub">Kostenminimales Stromsystem für Deutschland · PyPSA-Kapazitätsausbau</div>
   <div class="de-chips">
     <span class="de-chip">5 Zonen + Offshore</span>
@@ -149,8 +149,9 @@ st.markdown("""
     <span class="de-chip">CO₂-Budget</span>
     <span class="de-chip">Kapazitätsausbau</span>
     <span class="de-chip">Monte-Carlo</span>
-    <span class="de-chip">11 Nachbarländer</span>
-    <span class="de-chip">+ Kreis 2 (13 Länder)</span>
+    <span class="de-chip">Kreis 1 · 11 Nachbarn</span>
+    <span class="de-chip">+ Kreis 2 · 13</span>
+    <span class="de-chip">+ Kreis 3 · 11</span>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -260,6 +261,16 @@ with sb.expander("🌍 Europa", expanded=False):
                                       "Prinzip wie die Nachbarländer; Flotten "
                                       "literaturbasiert. Modell wird größer/"
                                       "langsamer.")
+    include_kreis3 = st.checkbox("Kreis 3: restliches Europa", value=False,
+                                 disabled=not include_europe,
+                                 key="include_kreis3",
+                                 help="Koppelt einen 3. Länderkreis mit 11 weiteren "
+                                      "Ländern des ENTSO-E-Verbundnetzes: Baltikum "
+                                      "(EE, LV, LT), Westbalkan (RS, BA, ME, MK, AL, "
+                                      "XK), Moldau (MD) und Ukraine (UA). Nur "
+                                      "zusammen mit Kreis 2. Flotten literaturbasiert "
+                                      "(UA im Kriegskontext besonders unsicher). "
+                                      "Modell wird nochmals größer/langsamer.")
     foreign_era5 = st.checkbox("Ausland: ERA5-Wetter", value=False,
                                disabled=not include_neighbors, key="foreign_era5",
                                help="Auslandswetter aus echten ERA5-Daten statt "
@@ -320,7 +331,7 @@ with sb.expander("🔄 Update", expanded=False):
 @st.cache_resource(show_spinner=False)
 def solve(co2_budget, co2_price, load_scale, heat_scale,
           discount_rate, gas_price, include_neighbors, foreign_era5,
-          include_europe=False):
+          include_europe=False, include_kreis3=False):
     holder = st.empty()
     bar = holder.progress(0, text="⏳ Starte Optimierung …")
     def _prog(frac, label):
@@ -330,7 +341,8 @@ def solve(co2_budget, co2_price, load_scale, heat_scale,
                                discount_rate=discount_rate, gas_price=gas_price,
                                include_neighbors=include_neighbors,
                                foreign_era5=foreign_era5, verbose=False,
-                               progress=_prog, include_europe=include_europe)
+                               progress=_prog, include_europe=include_europe,
+                               include_kreis3=include_kreis3)
     holder.empty()   # Balken nach Fertigstellung ausblenden
     return net, era5_ok
 
@@ -383,7 +395,7 @@ try:
                        float(load_scale), float(heat_scale),
                        float(discount_pct) / 100., float(gas_price),
                        bool(include_neighbors), bool(foreign_era5),
-                       bool(include_europe))
+                       bool(include_europe), bool(include_kreis3))
 except Exception as _solve_err:
     solve.clear()   # kaputtes/leeres Ergebnis nicht cachen
     st.error(f"❌ Optimierung nicht erfolgreich gelöst.\n\n{_solve_err}")
@@ -409,7 +421,7 @@ erz_twh = float(dm.model_energy_by_carrier(n).sum())
 # ── KPI-Trend-Historie für Sparklines (max. 15 echte Läufe, eigene Liste,
 #    damit der „Läufe"-Tab/runs unangetastet bleibt) ───────────────────────
 _ksig = (co2_budget_mt, co2_price, load_scale, heat_scale, discount_pct,
-         gas_price, include_neighbors, foreign_era5, include_europe)
+         gas_price, include_neighbors, foreign_era5, include_europe, include_kreis3)
 if "kpi_hist" not in st.session_state:
     st.session_state.kpi_hist = []
 if st.session_state.get("_kpi_hist_sig") != _ksig:      # nur echte neue Läufe
@@ -479,7 +491,7 @@ def _csv_download(df, index=False):
 if "runs" not in st.session_state:
     st.session_state.runs = []
 _sig = (co2_budget_mt, co2_price, load_scale, heat_scale, discount_pct,
-        gas_price, include_neighbors, foreign_era5, include_europe)
+        gas_price, include_neighbors, foreign_era5, include_europe, include_kreis3)
 if st.session_state.get("_last_run_sig") != _sig:   # nur echte neue Läufe erfassen
     st.session_state._last_run_sig = _sig
     st.session_state.runs.append({
@@ -491,7 +503,8 @@ if st.session_state.get("_last_run_sig") != _sig:   # nur echte neue Läufe erfa
         "CO₂-Budget": co2_budget_mt, "CO₂-Preis": co2_price,
         "Last": load_scale, "Wärme": heat_scale, "WACC (%)": discount_pct,
         "Gas": gas_price,
-        "Nachbarn": ("Europa" if include_europe else "ja") if include_neighbors else "nein",
+        "Nachbarn": (("Kreis 3" if include_kreis3 else "Kreis 2") if include_europe
+                     else "ja") if include_neighbors else "nein",
     })
     st.session_state.runs = st.session_state.runs[-5:]   # nur die letzten 5 behalten
 
@@ -702,11 +715,13 @@ with tab_karte:
             marker=dict(size=13, color="#B0BEC5"),
             name="Nachbarländer"))
 
+    kreis3 = gekoppelt and any(cc in n.buses.index for cc in dm.EUROPE3)
     europa = gekoppelt and any(cc in n.buses.index for cc in dm.EUROPE2)
-    center = (dict(lat=50.0, lon=10.0) if europa else
+    center = (dict(lat=49.5, lon=18.0) if kreis3 else
+              dict(lat=50.0, lon=10.0) if europa else
               dict(lat=54.0, lon=11.0) if gekoppelt else
               dict(lat=51.1, lon=10.3))
-    zoom = 2.7 if europa else 3.6 if gekoppelt else 4.7
+    zoom = 2.3 if kreis3 else 2.7 if europa else 3.6 if gekoppelt else 4.7
     fig.update_layout(
         map=dict(style="carto-darkmatter", center=center, zoom=zoom),
         height=660, margin=dict(l=0, r=0, t=10, b=0),

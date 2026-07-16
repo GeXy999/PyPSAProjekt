@@ -1,6 +1,6 @@
 # 📘 Dokumentation – Deutschland Energy Model
 
-> **Stand:** 10.07.2026 · **Version:** v1.2 (Kreis 2 – 13 weitere europäische Länder; Update-Knopf; Launcher/Setup; GUI-Verbesserungen inkl. Erklär-Hilfetexte; CO₂-Preis-Sensitivität)
+> **Stand:** 13.07.2026 · **Version:** v1.3 (Kreis 3 – 11 weitere ENTSO-E-Länder: Baltikum/Westbalkan/Moldau/Ukraine; Kreis 2; Update-Knopf; Launcher/Setup; GUI-Verbesserungen inkl. Erklär-Hilfetexte; CO₂-Preis-Sensitivität)
 > Diese Datei erklärt die beiden Kern-Skripte des Projekts und die wichtigsten
 > Funktionen & Formeln. Sie wird bei Änderungen am Code mitgepflegt.
 >
@@ -790,6 +790,39 @@ relevantesten), nicht der komplette Kontinent – daher der neutrale Name „Kre
 
 > **Mögliche nächste Ausbaustufen:** echte ENTSO-E-Kapazitäten/NTC, ERA5-Wetter je
 > Land, Speicher/Pumpspeicher im Ausland, mehrere Gebotszonen (z. B. DK1/DK2, NO2/NO5).
+
+### 9.4 Kreis 3: restliches (netztechnisch angebundenes) Europa
+
+Die Checkbox **Kreis 3: restliches Europa** (nur zusammen mit „Kreis 2") koppelt
+**11 weitere Länder** des ENTSO-E-Verbundnetzes – nach exakt demselben Ein-Knoten-
+Prinzip wie Kreis 2. `EUROPE3 = EE, LV, LT, RS, BA, ME, MK, AL, XK, MD, UA`:
+
+- **Baltikum** (EE, LV, LT) – seit 2025 synchron mit Kontinentaleuropa (Anschluss
+  über PL/FI).
+- **Westbalkan** (RS, BA, ME, MK, AL, XK) – im ENTSO-E-Synchrongebiet (Anschluss
+  über HU/HR/GR/RS).
+- **Osteuropa** (MD, UA) – seit 2022 synchron mit Kontinentaleuropa (Anschluss über
+  RO/PL).
+
+- **Partner-Kopplung** (wie Kreis 2, Kuppelstelle Land↔Partnerland): EE↔FI, LV↔EE,
+  LT↔PL, RS↔HU, BA↔HR, ME/MK/XK↔RS, AL↔GR, MD↔RO, UA↔PL. Die Dict-Reihenfolge
+  stellt sicher, dass der Partner-Bus beim Aufbau existiert. Insgesamt mit allen drei
+  Kreisen: **35 Auslandsknoten, 35 Kuppelstellen**.
+- **Umsetzung:** neues `include_kreis3`-Flag (nur wirksam mit `include_europe`) durch
+  `run_base → make_profiles → build_network`; die aktive Ländermenge liefert
+  `_foreign_set(include_europe, include_kreis3)` – **verhaltensneutral**: ohne Kreis 3
+  identisch zum bisherigen Verhalten (11 → 24 → 35 Knoten).
+- **Warum „restliches" und nicht „ganz Europa":** Isolierte bzw. Mikro-Systeme
+  (Island, Malta, Zypern, Andorra, Monaco …) haben **kein sinnvolles Kontinentalnetz**
+  und bleiben bewusst außen vor. „Kreis 3" ist also das netztechnisch anschließbare
+  restliche Europa, nicht der komplette Kontinent.
+- **Ehrlichkeit/Grenzen:** Flotten/Verbrauch sind **literaturbasierte Näherungen**
+  (~2023, ENTSO-E/IRENA-Größenordnungen). **UA** ist wegen des Kriegskontexts
+  **besonders unsicher** (Vorkriegs-Größenordnung, ein Knoten). Wie bei Kreis 1/2:
+  KPIs bleiben DE-gefiltert, CO₂-Budget gilt nur für DE.
+- **Performance-Vereinfachung:** **Monte-Carlo und CO₂-Preis-Sweep nutzen Kreis 3
+  nicht** (35 Auslandsknoten × viele Läufe wären unpraktikabel) – nur der Basis-Solve
+  koppelt Kreis 3. Ehrlich benannt, kein Fehler.
 
 ---
 

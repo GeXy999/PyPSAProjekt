@@ -8,8 +8,25 @@
   // Explorer aufgeraeumt halten
   "files.exclude": {
     "**/__pycache__": true,
-    "**/*.pyc": true
+    "**/*.pyc": true,
+    "node_modules": true,
+    ".claude-flow": true,
+    ".agents": true,
+    ".codex": true
   },
+
+  // Datei-Watcher entlasten -> beseitigt die "10.000+ Changes"-Anzeige
+  // (diese Ordner sind gross/generiert und gehoeren nicht ins Repo)
+  "files.watcherExclude": {
+    "**/node_modules/**": true,
+    "**/.venv/**": true,
+    "**/.claude-flow/**": true,
+    "**/.agents/**": true,
+    "**/.codex/**": true,
+    "**/era5_data/**": true
+  },
+  // Grosse-Repo-Warnung unterdruecken (node_modules etc. sind ignoriert)
+  "git.ignoreLimitWarning": true,
 
   // Orientierungslinien; Format-on-Save BEWUSST aus (kein Auto-Reformat
   // des kompakt gehaltenen Codes)

@@ -254,11 +254,13 @@ npm-debug.log
 
 # Claude-Flow / Harness (lokal, nicht versionieren)
 .claude-flow/
+.agents/
+.codex/
+AGENTS.md
 
-# Lokale Maintenance-/Download-Helfer (Wegwerf-Tooling, nicht ins Repo)
+# Lokale Maintenance-/Download-Helfer + Logs (Wegwerf-Tooling, nicht ins Repo)
 scripts/
-download_era5_europe.py
-download_era5_europe.bat
+logs/
 era5_europa_out.log
 era5_europa_err.log
 
