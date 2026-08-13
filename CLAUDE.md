@@ -19,18 +19,3 @@ Projekt-Root bleiben – alle Datenpfade sind `SCRIPT_DIR`-relativ (`OUTPUT_DIR`
 - **Ergebnistreue:** Änderungen, die „nichts an den Ergebnissen ändern" sollen, vorher
   verhaltensneutral verifizieren (numerisch/Reproduzierbarkeit), bevor committet wird.
 - **Commits/Push** nur auf ausdrücklichen Wunsch; sinnvoll gruppieren, deutsche Messages.
-
-## Ruflo / Agenten-Workflow
-- Ruflo nur einsetzen, wenn die Aufgabe mehrstufig ist, mehrere Dateien betrifft oder parallele Rollen sinnvoll sind.
-- Für kleine Ein-Datei-Änderungen, reine Textkorrekturen oder einfache Debug-Fixes keinen großen Swarm starten.
-- Immer klein anfangen: erst 3–4 spezialisierte Agenten, nur bei echtem Bedarf skalieren.
-- Rollen klar trennen:
-  - Architekt: Projektstruktur, Abhängigkeiten, Vorgehen.
-  - Coder: konkrete Implementierung.
-  - Tester: Randfälle, Regressionen, Reproduzierbarkeit.
-  - Reviewer: Schwachstellen, unnötige Komplexität, Folgerisiken.
-- Vor dem Lesen vieler Dateien zuerst die relevante Struktur oder den Graph nutzen, falls verfügbar.
-- Danach nur die wirklich betroffenen Dateien oder Codeabschnitte öffnen.
-- Ruflo soll Kontext sparen und Arbeit verteilen, nicht unnötige Komplexität erzeugen.
-- Memory, Swarms und Zusatzmodule nur dann nutzen, wenn daraus ein klarer Vorteil für diese Aufgabe entsteht.
-- Wenn die Aufgabe klar lösbar ist, bevorzuge den einfachsten direkten Weg.
