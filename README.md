@@ -81,6 +81,11 @@ zusammen (Zusammenfassung + grober Plausibilitäts-Check). Läuft komplett
 **offline auf diesem PC** — keine Daten verlassen den Rechner, **kein
 API-Key und kein Ollama-Account nötig**.
 
+> Die KI bekommt dabei nicht die rohe Ergebnisdatei zu sehen — die Kennzahlen
+> werden live in Python aus dem gelösten Netzwerk berechnet und der KI nur
+> als kurzer Text übergeben; sie formuliert daraus Fließtext, erfindet aber
+> keine eigenen Zahlen.
+
 **Automatisch:** `setup.bat` bietet Schritt **[4/4]** an, Ollama +
 Modell (`llama3.2:3b`, ~2,5 GB) direkt per `winget` zu installieren —
 einfach mit `j` bestätigen. Kann jederzeit übersprungen werden.
@@ -90,7 +95,9 @@ einfach mit `j` bestätigen. Kann jederzeit übersprungen werden.
 2. Einmalig ein Modell laden (Terminal): `ollama pull llama3.2:3b`
    (~2 GB, danach offline nutzbar)
 3. Im Dashboard nach dem Lösen den Expander **„🧠 KI-Zusammenfassung"**
-   öffnen (unterhalb der Kennzahlen-Kacheln).
+   öffnen (unterhalb der Kennzahlen-Kacheln) und auf den Button
+   **„Zusammenfassung generieren"** klicken (läuft nicht automatisch, damit
+   die KI nicht bei jedem Regler-Wechsel neu aufgerufen wird).
 
 Ohne Ollama läuft die App **unverändert vollständig** weiter — der Expander
 zeigt dann nur einen Hinweis statt der Zusammenfassung.

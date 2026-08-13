@@ -406,16 +406,20 @@ def capex_annual(key: str) -> float:
     c, lt = CAPEX[key]
     return c * annuity(lt, DISCOUNT_RATE)
 
-def opex(co2_price: float = CO2_PRICE, gas_price: float = 55.0) -> dict[str, float]:
+def opex(co2_price: float = CO2_PRICE, gas_price: float = 55.0,
+         lignite_price: float = 28.0, hardcoal_price: float = 40.0) -> dict[str, float]:
     """Grenzkosten [€/MWh] inkl. CO₂-Preis auf fossile Träger.
 
-    gas_price = Brennstoffkosten Gas [€/MWh_th]; Kohlepreise skalieren
-    relativ dazu mit (Standard: Gas 55, Braunkohle 28, Steinkohle 40)."""
+    gas_price      = Brennstoffkosten Gas [€/MWh_th]   (Standard 55)
+    lignite_price  = Brennstoffkosten Braunkohle [€/MWh_th] (Standard 28)
+    hardcoal_price = Brennstoffkosten Steinkohle [€/MWh_th] (Standard 40)
+    Die drei Preise sind unabhängig einstellbar; die CO₂-Aufschläge ergeben
+    sich aus den trägerspezifischen Emissionsfaktoren (t/MWh_el)."""
     return {
         "Wind_on": 0.1, "Wind_off": 0.1, "Solar": 0.05, "Hydro": 0.5,
         "Gas_CCGT":  gas_price + 0.370 * co2_price,
-        "Lignite":   28. + 1.000 * co2_price,
-        "Hardcoal":  40. + 0.800 * co2_price,
+        "Lignite":   lignite_price + 1.000 * co2_price,
+        "Hardcoal":  hardcoal_price + 0.800 * co2_price,
         "Battery": 0.5, "H2_elec": 1., "H2_FC": 2., "HeatPump": 1.,
         # Zusätzliche Träger der Nachbarländer (EU-ETS-Preis wirkt auch hier):
         "Nuclear": 9., "Biomass": 45., "Oil": 150. + 0.650 * co2_price,
@@ -579,12 +583,18 @@ def build_network(prof: dict, loads: dict,
                   gas_price: float = 55.0,
                   include_neighbors: bool = False,
                   include_europe: bool = False,
-                  include_kreis3: bool = False) -> "pypsa.Network":
+                  include_kreis3: bool = False,
+                  lignite_price: float = 28.0,
+                  hardcoal_price: float = 40.0,
+                  p_nom_max: float = 250_000.,
+                  line_s_nom_max: float = 30_000.) -> "pypsa.Network":
     """Baut das 5-Zonen-Deutschland-Netz mit Sektorkopplung.
     include_neighbors=True koppelt zusätzlich die Nachbarländer (je 1 Knoten).
     include_europe=True   koppelt darüber hinaus den 2. Länderring (EUROPE2,
-    Kuppelstelle jeweils ans Partnerland) – erfordert include_neighbors."""
-    OP = opex(co2_price, gas_price)
+    Kuppelstelle jeweils ans Partnerland) – erfordert include_neighbors.
+    p_nom_max      = Obergrenze je erweiterbarer Erzeuger/Link [MW].
+    line_s_nom_max = Obergrenze je erweiterbarer Leitung [MW]."""
+    OP = opex(co2_price, gas_price, lignite_price, hardcoal_price)
     net = pypsa.Network()
     net.set_snapshots(snapshots)
     net.snapshot_weightings.loc[:, :] = TIME_RES   # TIME_RES-Stunden je Schritt korrekt gewichten
@@ -739,11 +749,12 @@ def build_network(prof: dict, loads: dict,
         net.add("GlobalConstraint", "co2_limit", sense="<=",
                 carrier_attribute="co2_emissions", constant=co2_budget)
 
-    # Realistische Obergrenzen (verhindert Skalierungswarnungen)
-    _P_MAX, _E_MAX = 250_000., 2_000_000.
+    # Realistische Obergrenzen (verhindert Skalierungswarnungen).
+    # p_nom_max/line_s_nom_max sind über die GUI einstellbar (Ausbaugrenzen).
+    _P_MAX, _E_MAX = float(p_nom_max), 2_000_000.
     net.generators.loc[net.generators.p_nom_extendable, "p_nom_max"] = _P_MAX
     net.links.loc[net.links.p_nom_extendable, "p_nom_max"] = _P_MAX
-    net.lines.loc[net.lines.s_nom_extendable, "s_nom_max"] = 30_000.
+    net.lines.loc[net.lines.s_nom_extendable, "s_nom_max"] = float(line_s_nom_max)
     net.stores.loc[net.stores.e_nom_extendable, "e_nom_max"] = _E_MAX
     net.storage_units.loc[net.storage_units.p_nom_extendable, "p_nom_max"] = _P_MAX
     return net
@@ -1054,11 +1065,19 @@ def run_base(co2_budget=CO2_BUDGET, co2_price=CO2_PRICE,
              load_scale=1.0, heat_scale=1.0,
              discount_rate=None, gas_price=55.0,
              include_neighbors=False, foreign_era5=False, verbose=True,
-             progress=None, include_europe=False, include_kreis3=False):
+             progress=None, include_europe=False, include_kreis3=False,
+             lignite_price=28.0, hardcoal_price=40.0,
+             p_nom_max=250_000., line_s_nom_max=30_000.):
     """Baut, löst und liefert (Netz, ERA5-Flag).
 
     discount_rate     = WACC (z. B. 0.07); None → globaler Standard.
     gas_price         = Gas-Brennstoffkosten [€/MWh_th].
+    lignite_price     = Braunkohle-Brennstoffkosten [€/MWh_th].
+    hardcoal_price    = Steinkohle-Brennstoffkosten [€/MWh_th].
+    p_nom_max         = Ausbaugrenze je erweiterbarer Anlage [MW]; muss über
+                        dem größten p_nom_min (25 000 MW, Solar_Sued) liegen.
+    line_s_nom_max    = Ausbaugrenze je erweiterbarer Leitung [MW]; muss über
+                        dem größten s_nom_min (8 000 MW) liegen.
     include_neighbors = Nachbarländer koppeln (je 1 Knoten).
     include_europe    = zusätzlich 2. Länderring (nur mit include_neighbors).
     include_kreis3    = zusätzlich 3. Länderring (nur mit include_europe).
@@ -1080,7 +1099,11 @@ def run_base(co2_budget=CO2_BUDGET, co2_price=CO2_PRICE,
         net = build_network(prof, loads, co2_budget, co2_price, gas_price,
                             include_neighbors=include_neighbors,
                             include_europe=include_europe,
-                            include_kreis3=include_kreis3)
+                            include_kreis3=include_kreis3,
+                            lignite_price=lignite_price,
+                            hardcoal_price=hardcoal_price,
+                            p_nom_max=p_nom_max,
+                            line_s_nom_max=line_s_nom_max)
         if progress: progress(0.55, "⚙️ Solver läuft (kann etwas dauern) …")
         try:
             gur = solve_network(net, verbose)
@@ -1099,17 +1122,27 @@ def run_base(co2_budget=CO2_BUDGET, co2_price=CO2_PRICE,
     return net, era5_ok
 
 def run_monte_carlo(n_mc=N_MC, co2_budget=CO2_BUDGET, co2_price=CO2_PRICE,
-                    include_neighbors=False, progress=None):
-    """MC über synthetische Wetterjahre → DataFrame."""
+                    include_neighbors=False, progress=None,
+                    include_europe=False, include_kreis3=False):
+    """MC über synthetische Wetterjahre → DataFrame.
+
+    include_europe/include_kreis3 koppeln zusätzlich den 2./3. Länderring.
+    Standard bleibt aus: jedes Wetterjahr ist ein eigener Solve, mit 35
+    Auslandsknoten wird der MC-Lauf entsprechend langsam."""
+    include_europe = include_europe and include_neighbors
+    include_kreis3 = include_kreis3 and include_europe
     rows = []
     for i in range(n_mc):
         if progress:
             progress(i / max(n_mc, 1), f"🎲 Wetterjahr {i+1}/{n_mc} …")
         try:
-            prof, _ = make_profiles(mc_seed=i)
+            prof, _ = make_profiles(mc_seed=i, include_europe=include_europe,
+                                    include_kreis3=include_kreis3)
             loads = make_loads(mc_seed=i)
             nm = build_network(prof, loads, co2_budget, co2_price,
-                               include_neighbors=include_neighbors)
+                               include_neighbors=include_neighbors,
+                               include_europe=include_europe,
+                               include_kreis3=include_kreis3)
             solve_network(nm, verbose=False)
             rows.append(dict(Jahr=i + 1, Kosten_MrdEa=total_cost(nm) / 1e9,
                              CO2_Mt=total_co2(nm, DE_AC_BUSES) / 1e6,

@@ -1,6 +1,6 @@
 # 📘 Dokumentation – Deutschland Energy Model
 
-> **Stand:** 13.08.2026 · **Version:** v1.4 (KI-Zusammenfassung via lokalem Ollama optional im Dashboard; Kreis 3 – 11 weitere ENTSO-E-Länder: Baltikum/Westbalkan/Moldau/Ukraine; Kreis 2; Update-Knopf; Launcher/Setup; GUI-Verbesserungen inkl. Erklär-Hilfetexte; CO₂-Preis-Sensitivität)
+> **Stand:** 13.08.2026 · **Version:** v1.5 (neue Szenario-Slider: Braun-/Steinkohlepreis + Ausbaugrenzen für Anlagen/Leitungen; Schalter „alle 3 Kreise – überall" inkl. Monte-Carlo & CO₂-Sweep; KI-Zusammenfassung via lokalem Ollama optional im Dashboard; Kreis 3 – 11 weitere ENTSO-E-Länder: Baltikum/Westbalkan/Moldau/Ukraine; Kreis 2; Update-Knopf; Launcher/Setup; GUI-Verbesserungen inkl. Erklär-Hilfetexte; CO₂-Preis-Sensitivität)
 > Diese Datei erklärt die beiden Kern-Skripte des Projekts und die wichtigsten
 > Funktionen & Formeln. Sie wird bei Änderungen am Code mitgepflegt.
 >
@@ -431,7 +431,14 @@ auf *„Modell optimieren"* → gecachter Lauf → Ergebnis-Tabs.
 | 🔌 Nachfrage | **Wärmelast-Skalierung** | `heat_scale` (Elektrifizierung/Wärmepumpen) |
 | 💰 Ökonomie | **Diskontsatz / WACC (%)** | `DISCOUNT_RATE` → Kapitalkosten des Zubaus |
 | 💰 Ökonomie | **Gaspreis (€/MWh_th)** | `gas_price` → Merit-Order |
+| 💰 Ökonomie | **Braunkohlepreis (€/MWh_th)** *(v1.5)* | `lignite_price` → Merit-Order |
+| 💰 Ökonomie | **Steinkohlepreis (€/MWh_th)** *(v1.5)* | `hardcoal_price` → Merit-Order |
+| 🏗️ Ausbaugrenzen | **Max. Ausbau je Anlage (GW)** *(v1.5)* | `p_nom_max` für alle erweiterbaren Erzeuger/Links/Speicher |
+| 🏗️ Ausbaugrenzen | **Max. Ausbau je Leitung (GW)** *(v1.5)* | `line_s_nom_max` → `s_nom_max` der Leitungen |
 | — | **Monte-Carlo Wetterjahre (0–60)** | Anzahl Robustheitsläufe |
+
+> Details zu den v1.5-Slidern (inkl. sicherer Untergrenzen und Gültigkeitsbereich):
+> siehe [9.7](#97-neue-szenario-slider-v15).
 
 ### 4.2 Caching (wichtig zu verstehen)
 
@@ -820,9 +827,11 @@ Prinzip wie Kreis 2. `EUROPE3 = EE, LV, LT, RS, BA, ME, MK, AL, XK, MD, UA`:
   (~2023, ENTSO-E/IRENA-Größenordnungen). **UA** ist wegen des Kriegskontexts
   **besonders unsicher** (Vorkriegs-Größenordnung, ein Knoten). Wie bei Kreis 1/2:
   KPIs bleiben DE-gefiltert, CO₂-Budget gilt nur für DE.
-- **Performance-Vereinfachung:** **Monte-Carlo und CO₂-Preis-Sweep nutzen Kreis 3
-  nicht** (35 Auslandsknoten × viele Läufe wären unpraktikabel) – nur der Basis-Solve
-  koppelt Kreis 3. Ehrlich benannt, kein Fehler.
+- **Performance-Vereinfachung (Standard):** **Monte-Carlo und CO₂-Preis-Sweep nutzen
+  Kreis 3 standardmäßig nicht** (35 Auslandsknoten × viele Läufe wären unpraktikabel) –
+  im Normalfall koppelt nur der Basis-Solve Kreis 3. Ehrlich benannt, kein Fehler.
+  **Seit v1.5 optional aufhebbar** über den Schalter „Ganz Europa: alle 3 Kreise –
+  überall" (siehe 9.6).
 
 ### 9.5 KI-Zusammenfassung (Ollama, optional)
 
@@ -833,18 +842,32 @@ berechneten Kennzahlen in Fließtext zusammenfassen – analog zum entsprechende
 Feature im Schwesterprojekt `pypsa-eur` (Dashboard dort).
 
 - **Funktionsweise:** `ollama_status()` prüft mit kurzem Timeout (1,5 s), ob
-  Ollama läuft und welche Modelle installiert sind. `ollama_generate()` schickt
-  Prompt + Modellname per POST an `/api/generate` (Timeout 180 s, `stream=False`,
-  `temperature=0.3`) und ist mit `st.cache_data(ttl=3600)` gecacht – derselbe
-  Prompt liefert innerhalb einer Stunde ohne erneuten Modell-Aufruf dieselbe
-  Antwort.
+  Ollama läuft und welche Modelle installiert sind. Modellauswahl und die
+  Kennzahlen-Liste werden immer angezeigt (kostenlos, kein KI-Aufruf); der
+  eigentliche `ollama_generate()`-Aufruf läuft **erst nach Klick auf den
+  Button „🧠 Zusammenfassung generieren"** (analog zum Vorbild in
+  `pypsa-eur` – kein automatischer KI-Aufruf bei jedem Rerun/Regler-Wechsel).
+  `ollama_generate()` schickt Prompt + Modellname per POST an
+  `/api/generate` (Timeout 180 s, `stream=False`, `temperature=0.3`) und ist
+  mit `st.cache_data(ttl=3600)` gecacht – derselbe Prompt liefert innerhalb
+  einer Stunde ohne erneuten Modell-Aufruf dieselbe Antwort.
+- **Kein Datei-Zugriff der KI:** Das Modell bekommt **nicht** die rohe
+  Ergebnisdatei (`.nc`-Netzwerk) zu sehen – ein lokales Text-Modell kann
+  über die einfache `/api/generate`-Schnittstelle nur Text lesen, keine
+  Binärdateien parsen oder selbst rechnen. Die Kennzahlen werden **live und
+  exakt in Python aus dem gerade gelösten Netzwerk `n` berechnet** (nicht
+  zwischengespeichert/veraltet) und der KI als kurzer Text-Prompt gegeben;
+  die KI formuliert daraus nur Fließtext + Plausibilitäts-Einschätzung,
+  erfindet aber laut Anweisung keine eigenen Zahlen. Diese Arbeitsteilung
+  ist bewusst so gewählt: Python rechnet exakt, kleine lokale Modelle sind
+  bei echter Zahlenaggregation unzuverlässig.
 - **Prompt-Inhalt:** Gesamtkosten, Ø Strompreis DE, CO₂-Emissionen vs. Budget,
   EE-Anteil, Erzeugung gesamt, die drei größten Erzeuger-Carrier sowie der
-  aktive Kopplungsring (kein Kreis / Kreis 1 / 2 / 3). Das Modell wird
-  angewiesen, **keine zusätzlichen Zahlen zu erfinden** und antwortet in zwei
-  Abschnitten: **Zusammenfassung** (3–5 Sätze, für Studierende ohne Vorwissen)
-  und **Plausibilitäts-Check** (2–3 Sätze, grobe Einschätzung anhand von
-  Weltwissen über reale Energiesysteme – **keine belastbare Fehlerprüfung**).
+  aktive Kopplungsring (kein Kreis / Kreis 1 / 2 / 3). Die KI antwortet in
+  zwei Abschnitten: **Zusammenfassung** (3–5 Sätze, für Studierende ohne
+  Vorwissen) und **Plausibilitäts-Check** (2–3 Sätze, grobe Einschätzung
+  anhand von Weltwissen über reale Energiesysteme – **keine belastbare
+  Fehlerprüfung**).
 - **Datenschutz/Offline:** Läuft vollständig lokal auf dem PC, der die App
   ausführt – keine Kennzahlen verlassen den Rechner, kein API-Key nötig.
 - **Optional, fehlerfrei ohne Ollama:** Ist Ollama nicht installiert/gestartet,
@@ -859,6 +882,60 @@ Feature im Schwesterprojekt `pypsa-eur` (Dashboard dort).
   Kein Ollama-Account nötig (der ist nur für Ollama Cloud/Turbo relevant,
   wenn Modelle auf Ollamas Servern statt lokal laufen sollen – hier nicht
   benötigt).
+
+### 9.6 Schalter „Ganz Europa: alle 3 Kreise – überall" (v1.5)
+
+Eine einzelne Checkbox im Sidebar-Bereich **🌍 Europa**, die zwei Dinge auf einmal tut:
+
+1. **Alle drei Kreise einschalten** – sie überschreibt die drei Einzel-Checkboxen
+   (`include_neighbors`, `include_europe`, `include_kreis3`) und schaltet zusätzlich
+   „Ausland: ERA5-Wetter" ein. Die Einzelschalter werden dabei sichtbar deaktiviert,
+   damit klar ist, dass sie überschrieben sind (Umsetzung: `… or alle_kreise` plus
+   `disabled=alle_kreise`).
+2. **Kreis 3 auch in Monte-Carlo und CO₂-Sweep nutzen** – hebt also die in 9.4
+   beschriebene Performance-Vereinfachung bewusst auf. Dafür bekam
+   `run_monte_carlo()` die neuen Parameter `include_europe`/`include_kreis3`
+   (reicht sie an `make_profiles` und `build_network` weiter); der Sweep brauchte
+   keine Modelländerung, da `run_co2_sweep()` seine `**run_kwargs` ohnehin an
+   `run_base()` durchreicht.
+
+- **Ehrlichkeit/Grenzen:** Der Schalter macht die Läufe **deutlich langsamer** – jeder
+  Monte-Carlo-Wetterjahr-Lauf und jeder Sweep-Punkt löst dann das große Netz mit 35
+  Auslandsknoten. Der Hilfetext im GUI weist explizit darauf hin.
+- **Verhaltensneutral im Standard:** Ausgeschaltet (Default) verhält sich alles exakt
+  wie in v1.4; die Dämpfungslogik `include_kreis3 and include_europe and
+  include_neighbors` bleibt in allen Pfaden erhalten.
+
+### 9.7 Neue Szenario-Slider (v1.5)
+
+v1.5 macht vier bereits im Modell vorhandene, bislang **hart kodierte** Werte in der
+Sidebar einstellbar. Bewusst wurden **keine neuen Modell-Mechaniken** eingeführt –
+jeder Slider legt exakt eine Zahl frei, die vorher fest im Code stand:
+
+| Slider (Sidebar) | vorher hart kodiert | neuer Parameter | Einheit |
+|---|---|---|---|
+| Braunkohlepreis | `28.` in `opex()` | `lignite_price` | €/MWh_th |
+| Steinkohlepreis | `40.` in `opex()` | `hardcoal_price` | €/MWh_th |
+| Max. Ausbau je Anlage | `_P_MAX = 250_000.` | `p_nom_max` | MW (GUI: GW) |
+| Max. Ausbau je Leitung | `s_nom_max = 30_000.` | `line_s_nom_max` | MW (GUI: GW) |
+
+- **Durchreichung:** identisch zum bestehenden `gas_price`-Muster, also
+  `run_base() → build_network() → opex()`. Keine globalen Variablen nötig.
+- **Sichere Untergrenzen:** Die Slider-Minima sind bewusst nicht beliebig klein,
+  weil `p_nom_max`/`s_nom_max` nie unter das jeweilige `p_nom_min`/`s_nom_min` des
+  Bestands fallen dürfen – sonst wird das Modell **unlösbar**. Maßgeblich sind
+  **25 GW** (größtes `p_nom_min`: `Solar_Sued`) bzw. **8 GW** (größtes `s_nom_min`:
+  `Leitung_Nord_West`); die Slider starten daher bei 30 GW bzw. 10 GW.
+- **Verhaltensneutral geprüft:** Mit den Default-Werten liefert `opex()` exakt die
+  bisherigen Grenzkosten (Braunkohle 108, Steinkohle 104 €/MWh bei 80 €/t CO₂) und
+  das Netz exakt die bisherigen Limits (250 GW / 30 GW) – numerisch verifiziert.
+- **Korrigierter Docstring:** Der alte `opex()`-Docstring behauptete, die Kohlepreise
+  würden „relativ zum Gaspreis skalieren". Das tat der Code nie (28/40 waren fest).
+  Der Docstring beschreibt jetzt das tatsächliche Verhalten: drei unabhängige Preise.
+- **Gültigkeitsbereich:** Die vier Slider wirken im **Basis-Solve und im CO₂-Sweep**
+  (der `run_base()` nutzt). Der **Monte-Carlo-Pfad** ruft `build_network()` direkt mit
+  Standardwerten auf und bleibt davon unberührt – dort geht es um Wetter-Robustheit,
+  nicht um Preis-/Grenzen-Variation.
 
 ---
 

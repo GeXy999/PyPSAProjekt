@@ -142,7 +142,7 @@ if _light:
 st.markdown("""
 <div class="de-hero">
   <h1>⚡ Deutschland Energy Model
-      <span style="color:#9fc3e8;font-weight:600;font-size:1rem;">v1.4</span></h1>
+      <span style="color:#9fc3e8;font-weight:600;font-size:1rem;">v1.5</span></h1>
   <div class="sub">Kostenminimales Stromsystem für Deutschland · PyPSA-Kapazitätsausbau</div>
   <div class="de-chips">
     <span class="de-chip">5 Zonen + Offshore</span>
@@ -236,6 +236,16 @@ with sb.expander("💰 Ökonomie", expanded=False):
                              key="gas_price",
                              help="Brennstoffkosten Gas – verschiebt die Merit-Order "
                                   "zwischen Gas, Kohle und Erneuerbaren")
+    lignite_price = st.slider("Braunkohlepreis (€/MWh_th)", 5, 80, 28, step=1,
+                              key="lignite_price",
+                              help="Brennstoffkosten Braunkohle (Standard 28). "
+                                   "Zusammen mit dem Gaspreis steuert er den "
+                                   "Gas↔Kohle-Wettbewerb in der Merit-Order.")
+    hardcoal_price = st.slider("Steinkohlepreis (€/MWh_th)", 5, 120, 40, step=1,
+                               key="hardcoal_price",
+                               help="Brennstoffkosten Steinkohle (Standard 40). "
+                                    "Steinkohle hat einen geringeren CO₂-Faktor "
+                                    "als Braunkohle, ist aber im Brennstoff teurer.")
     with st.expander("ℹ️ Warum beeinflusst der Diskontsatz den Ausbau?"):
         st.markdown(
             "Der **Diskontsatz / WACC** (Weighted Average Cost of Capital) sind "
@@ -245,15 +255,50 @@ with sb.expander("💰 Ökonomie", expanded=False):
             "Zubau teurer, sodass das Modell tendenziell weniger Erneuerbare baut "
             "und länger auf bestehende (fossile) Kraftwerke setzt.")
 
+with sb.expander("🏗️ Ausbaugrenzen", expanded=False):
+    p_nom_max_gw = st.slider("Max. Ausbau je Anlage (GW)", 30, 500, 250, step=10,
+                             key="p_nom_max_gw",
+                             help="Obergrenze, wie groß eine einzelne erweiterbare "
+                                  "Anlage (Wind-, Solar-, Gaspark, Batterie, "
+                                  "Elektrolyseur …) werden darf. Standard 250 GW "
+                                  "ist bewusst großzügig – kleinere Werte bilden "
+                                  "Flächenkonkurrenz/Akzeptanzgrenzen ab.")
+    line_max_gw  = st.slider("Max. Ausbau je Leitung (GW)", 10, 100, 30, step=5,
+                             key="line_max_gw",
+                             help="Obergrenze je Übertragungsleitung. Niedrige "
+                                  "Werte erzwingen mehr lokale Erzeugung/Speicher "
+                                  "statt Nord-Süd-Transport (Netz vs. Redispatch).")
+    with st.expander("ℹ️ Warum gibt es diese Grenzen überhaupt?"):
+        st.markdown(
+            "Ohne Obergrenze könnte die Optimierung theoretisch beliebig große "
+            "Anlagen bauen – rechnerisch günstig, real aber unmöglich (Fläche, "
+            "Genehmigungen, Lieferketten). Die Grenzen halten das Ergebnis "
+            "realistisch und vermeiden numerische Skalierungsprobleme im Solver.\n\n"
+            "⚠️ Die Minima sind bewusst nicht beliebig klein: Der Bestand "
+            "(z. B. 25 GW Solar in Süd, 8 GW Offshore-Leitung) muss weiter "
+            "hineinpassen, sonst wäre das Modell unlösbar.")
+
 with sb.expander("🌍 Europa", expanded=False):
+    alle_kreise = st.checkbox("🌍 Ganz Europa: alle 3 Kreise – überall",
+                              value=False, key="alle_kreise",
+                              help="Schaltet alle drei Länderkreise auf einmal ein "
+                                   "(35 Auslandsknoten) UND nutzt sie zusätzlich in "
+                                   "Monte-Carlo und CO₂-Preis-Sweep, die sonst nur "
+                                   "mit Kreis 1/2 rechnen. ⚠ Deutlich längere "
+                                   "Rechenzeit – jeder MC-Lauf bzw. Sweep-Punkt löst "
+                                   "dann das große Netz.")
+    if alle_kreise:
+        st.caption("✅ Alle 3 Kreise aktiv – auch in Monte-Carlo & CO₂-Sweep. "
+                   "Die Einzelschalter unten sind dadurch überschrieben.")
     include_neighbors = st.checkbox("Nachbarländer koppeln", value=False,
                                     key="include_neighbors",
+                                    disabled=alle_kreise,
                                     help="11 Nachbarländer (FR, BE, LU, NL, DK, PL, "
                                          "CZ, AT, CH, SE, NO) als Ein-Knoten-Modelle "
                                          "mit Import/Export. Nur DE baut aus; "
-                                         "CO₂-Budget gilt nur für DE.")
+                                         "CO₂-Budget gilt nur für DE.") or alle_kreise
     include_europe = st.checkbox("Kreis 2: weitere Länder", value=False,
-                                 disabled=not include_neighbors,
+                                 disabled=not include_neighbors or alle_kreise,
                                  key="include_europe",
                                  help="Koppelt einen 2. Länderkreis mit 13 weiteren "
                                       "(nicht allen!) europäischen Ländern: "
@@ -262,9 +307,9 @@ with sb.expander("🌍 Europa", expanded=False):
                                       "Partnerland (z. B. ES↔FR). Gleiches "
                                       "Prinzip wie die Nachbarländer; Flotten "
                                       "literaturbasiert. Modell wird größer/"
-                                      "langsamer.")
+                                      "langsamer.") or alle_kreise
     include_kreis3 = st.checkbox("Kreis 3: restliches Europa", value=False,
-                                 disabled=not include_europe,
+                                 disabled=not include_europe or alle_kreise,
                                  key="include_kreis3",
                                  help="Koppelt einen 3. Länderkreis mit 11 weiteren "
                                       "Ländern des ENTSO-E-Verbundnetzes: Baltikum "
@@ -272,7 +317,7 @@ with sb.expander("🌍 Europa", expanded=False):
                                       "XK), Moldau (MD) und Ukraine (UA). Nur "
                                       "zusammen mit Kreis 2. Flotten literaturbasiert "
                                       "(UA im Kriegskontext besonders unsicher). "
-                                      "Modell wird nochmals größer/langsamer.")
+                                      "Modell wird nochmals größer/langsamer.") or alle_kreise
     foreign_era5 = st.checkbox("Ausland: ERA5-Wetter", value=False,
                                disabled=not include_neighbors, key="foreign_era5",
                                help="Auslandswetter aus echten ERA5-Daten statt "
@@ -333,7 +378,9 @@ with sb.expander("🔄 Update", expanded=False):
 @st.cache_resource(show_spinner=False)
 def solve(co2_budget, co2_price, load_scale, heat_scale,
           discount_rate, gas_price, include_neighbors, foreign_era5,
-          include_europe=False, include_kreis3=False):
+          include_europe=False, include_kreis3=False,
+          lignite_price=28.0, hardcoal_price=40.0,
+          p_nom_max=250_000., line_s_nom_max=30_000.):
     holder = st.empty()
     bar = holder.progress(0, text="⏳ Starte Optimierung …")
     def _prog(frac, label):
@@ -344,25 +391,33 @@ def solve(co2_budget, co2_price, load_scale, heat_scale,
                                include_neighbors=include_neighbors,
                                foreign_era5=foreign_era5, verbose=False,
                                progress=_prog, include_europe=include_europe,
-                               include_kreis3=include_kreis3)
+                               include_kreis3=include_kreis3,
+                               lignite_price=lignite_price,
+                               hardcoal_price=hardcoal_price,
+                               p_nom_max=p_nom_max,
+                               line_s_nom_max=line_s_nom_max)
     holder.empty()   # Balken nach Fertigstellung ausblenden
     return net, era5_ok
 
 @st.cache_data(show_spinner=False)
-def monte_carlo(n_mc, co2_budget, co2_price, include_neighbors):
+def monte_carlo(n_mc, co2_budget, co2_price, include_neighbors,
+                include_europe=False, include_kreis3=False):
     holder = st.empty()
     bar = holder.progress(0, text="⏳ Monte-Carlo startet …")
     def _prog(frac, label):
         bar.progress(min(int(frac * 100), 100), text=label)
     df = dm.run_monte_carlo(n_mc=n_mc, co2_budget=co2_budget,
                             co2_price=co2_price,
-                            include_neighbors=include_neighbors, progress=_prog)
+                            include_neighbors=include_neighbors, progress=_prog,
+                            include_europe=include_europe,
+                            include_kreis3=include_kreis3)
     holder.empty()
     return df
 
 @st.cache_data(show_spinner=False)
 def co2_sweep(prices, co2_budget, include_neighbors, load_scale, heat_scale,
-              discount_rate, gas_price, foreign_era5, include_europe):
+              discount_rate, gas_price, foreign_era5, include_europe,
+              include_kreis3=False):
     holder = st.empty()
     bar = holder.progress(0, text="⏳ CO₂-Preis-Sensitivität startet …")
     def _prog(frac, label):
@@ -372,7 +427,8 @@ def co2_sweep(prices, co2_budget, include_neighbors, load_scale, heat_scale,
                           progress=_prog, load_scale=load_scale,
                           heat_scale=heat_scale, discount_rate=discount_rate,
                           gas_price=gas_price, foreign_era5=foreign_era5,
-                          include_europe=include_europe)
+                          include_europe=include_europe,
+                          include_kreis3=include_kreis3)
     holder.empty()
     return df
 
@@ -397,7 +453,9 @@ try:
                        float(load_scale), float(heat_scale),
                        float(discount_pct) / 100., float(gas_price),
                        bool(include_neighbors), bool(foreign_era5),
-                       bool(include_europe), bool(include_kreis3))
+                       bool(include_europe), bool(include_kreis3),
+                       float(lignite_price), float(hardcoal_price),
+                       float(p_nom_max_gw) * 1e3, float(line_max_gw) * 1e3)
 except Exception as _solve_err:
     solve.clear()   # kaputtes/leeres Ergebnis nicht cachen
     st.error(f"❌ Optimierung nicht erfolgreich gelöst.\n\n{_solve_err}")
@@ -437,7 +495,11 @@ def ollama_generate(prompt: str, model: str) -> str | None:
         r = requests.post(
             f"{OLLAMA_URL}/api/generate",
             json={"model": model, "prompt": prompt, "stream": False,
-                  "options": {"temperature": 0.3}},
+                  # num_gpu=0 erzwingt CPU-Ausführung: auf älteren/kleinen GPUs
+                  # stürzt Ollamas Vulkan-Backend beim Laden reproduzierbar ab
+                  # (HTTP 500, "llama-server process has terminated: exit
+                  # status 0xc0000005"). CPU ist langsamer, aber zuverlässig.
+                  "options": {"temperature": 0.3, "num_gpu": 0}},
             timeout=180,
         )
         r.raise_for_status()
@@ -458,7 +520,8 @@ erz_twh = float(dm.model_energy_by_carrier(n).sum())
 # ── KPI-Trend-Historie für Sparklines (max. 15 echte Läufe, eigene Liste,
 #    damit der „Läufe"-Tab/runs unangetastet bleibt) ───────────────────────
 _ksig = (co2_budget_mt, co2_price, load_scale, heat_scale, discount_pct,
-         gas_price, include_neighbors, foreign_era5, include_europe, include_kreis3)
+         gas_price, include_neighbors, foreign_era5, include_europe, include_kreis3,
+         lignite_price, hardcoal_price, p_nom_max_gw, line_max_gw, alle_kreise)
 if "kpi_hist" not in st.session_state:
     st.session_state.kpi_hist = []
 if st.session_state.get("_kpi_hist_sig") != _ksig:      # nur echte neue Läufe
@@ -576,13 +639,15 @@ with st.expander("🧠 KI-Zusammenfassung (lokal, optional)", expanded=False):
             "Plausibilitätseinschätzung, keine belastbare Fehlerprüfung.\n\n"
             + "\n".join(f"- {b}" for b in _kpi_bullets)
         )
-        with st.spinner(f"🧠 {_ki_model} formuliert Zusammenfassung …"):
-            _ki_text = ollama_generate(_ki_prompt, _ki_model)
-        if _ki_text:
-            st.markdown(_ki_text)
-        else:
-            st.warning("Modell hat nicht geantwortet (Timeout oder Fehler) – "
-                       "Kennzahlen oben sind unabhängig davon vollständig.")
+        if st.button("🧠 Zusammenfassung generieren", key="gen_ai_summary"):
+            with st.spinner(f"{_ki_model} formuliert Zusammenfassung … "
+                            "(je nach Hardware bis zu einigen Minuten)"):
+                _ki_text = ollama_generate(_ki_prompt, _ki_model)
+            if _ki_text:
+                st.markdown(_ki_text)
+            else:
+                st.warning("Modell hat nicht geantwortet (Timeout oder Fehler) – "
+                           "Kennzahlen oben sind unabhängig davon vollständig.")
 
 FARBEN = dm.CARRIER_COLORS
 
@@ -595,7 +660,8 @@ def _csv_download(df, index=False):
 if "runs" not in st.session_state:
     st.session_state.runs = []
 _sig = (co2_budget_mt, co2_price, load_scale, heat_scale, discount_pct,
-        gas_price, include_neighbors, foreign_era5, include_europe, include_kreis3)
+        gas_price, include_neighbors, foreign_era5, include_europe, include_kreis3,
+        lignite_price, hardcoal_price, p_nom_max_gw, line_max_gw, alle_kreise)
 if st.session_state.get("_last_run_sig") != _sig:   # nur echte neue Läufe erfassen
     st.session_state._last_run_sig = _sig
     st.session_state.runs.append({
@@ -606,7 +672,9 @@ if st.session_state.get("_last_run_sig") != _sig:   # nur echte neue Läufe erfa
         "Erzeugung (TWh/a)": round(erz_twh, 0),
         "CO₂-Budget": co2_budget_mt, "CO₂-Preis": co2_price,
         "Last": load_scale, "Wärme": heat_scale, "WACC (%)": discount_pct,
-        "Gas": gas_price,
+        "Gas": gas_price, "Braunkohle": lignite_price,
+        "Steinkohle": hardcoal_price,
+        "Max Anlage (GW)": p_nom_max_gw, "Max Leitung (GW)": line_max_gw,
         "Nachbarn": (("Kreis 3" if include_kreis3 else "Kreis 2") if include_europe
                      else "ja") if include_neighbors else "nein",
     })
@@ -1099,7 +1167,8 @@ with tab_mc:
                 "und erneut optimieren.")
     else:
         mc_df = monte_carlo(n_mc, co2_budget_mt * 1e6, float(co2_price),
-                            bool(include_neighbors))
+                            bool(include_neighbors),
+                            bool(alle_kreise), bool(alle_kreise))
         st.dataframe(mc_df.round(2), width="stretch", hide_index=True)
         valid = mc_df.dropna()
         if not valid.empty:
@@ -1142,10 +1211,10 @@ with tab_co2sw:
     # ── Optional: Nachbarn + ERA5 für Sweep ───────────────────────────
     col_a, col_b = st.columns(2)
     with col_a:
-        sweep_include_neighbors = st.checkbox("Nachbarländer (Sweep)",
-                                              value=include_neighbors,
-                                              key="sweep_include_neighbors",
-                                              help="Nutze die Nachbarn-Kopplung im Sweep")
+        sweep_include_neighbors = st.checkbox(
+            "Nachbarländer (Sweep)", value=include_neighbors,
+            key="sweep_include_neighbors", disabled=alle_kreise,
+            help="Nutze die Nachbarn-Kopplung im Sweep") or alle_kreise
     with col_b:
         sweep_foreign_era5 = st.checkbox("Ausland-ERA5 (Sweep)",
                                          value=foreign_era5,
@@ -1166,7 +1235,8 @@ with tab_co2sw:
                 discount_rate=float(discount_pct) / 100.,
                 gas_price=float(gas_price),
                 foreign_era5=bool(sweep_foreign_era5),
-                include_europe=bool(include_europe)
+                include_europe=bool(include_europe),
+                include_kreis3=bool(alle_kreise)
             )
 
             # ── Ergebnisse in DataFrame anzeigen ──────────────────
@@ -1257,7 +1327,8 @@ with tab_pdf:
             dm.plot_storage_prices(n, pc)
             dm.plot_map(n, pm, era5_ok)
             mc_df = (monte_carlo(n_mc, co2_budget_mt * 1e6, float(co2_price),
-                                 bool(include_neighbors))
+                                 bool(include_neighbors),
+                                 bool(alle_kreise), bool(alle_kreise))
                      if n_mc > 0 else
                      pd.DataFrame([dict(Jahr=1, Kosten_MrdEa=dm.total_cost(n)/1e9,
                                         CO2_Mt=co2, RE_Anteil_pct=ee,
