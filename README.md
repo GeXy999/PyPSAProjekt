@@ -73,6 +73,30 @@ Der erste Lauf lädt die Wetterdaten dann herunter (dauert).
 
 ---
 
+## 🧠 KI-Zusammenfassung (Ollama) — optional
+
+Im Dashboard fasst optional ein **lokales, kostenloses KI-Modell** (via
+[Ollama](https://ollama.com)) die Kennzahlen eines Laufs in Fließtext
+zusammen (Zusammenfassung + grober Plausibilitäts-Check). Läuft komplett
+**offline auf diesem PC** — keine Daten verlassen den Rechner, **kein
+API-Key und kein Ollama-Account nötig**.
+
+**Automatisch:** `setup.bat` bietet Schritt **[4/4]** an, Ollama +
+Modell (`llama3.2:3b`, ~2,5 GB) direkt per `winget` zu installieren —
+einfach mit `j` bestätigen. Kann jederzeit übersprungen werden.
+
+**Manuell nachholen:**
+1. Ollama installieren: <https://ollama.com>
+2. Einmalig ein Modell laden (Terminal): `ollama pull llama3.2:3b`
+   (~2 GB, danach offline nutzbar)
+3. Im Dashboard nach dem Lösen den Expander **„🧠 KI-Zusammenfassung"**
+   öffnen (unterhalb der Kennzahlen-Kacheln).
+
+Ohne Ollama läuft die App **unverändert vollständig** weiter — der Expander
+zeigt dann nur einen Hinweis statt der Zusammenfassung.
+
+---
+
 ## ⚙️ Solver: HiGHS (Standard) oder Gurobi (optional, schneller)
 
 **Standard: HiGHS** — kostenlos, wird von `setup.bat` automatisch installiert

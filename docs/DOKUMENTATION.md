@@ -1,6 +1,6 @@
 # 📘 Dokumentation – Deutschland Energy Model
 
-> **Stand:** 13.07.2026 · **Version:** v1.3 (Kreis 3 – 11 weitere ENTSO-E-Länder: Baltikum/Westbalkan/Moldau/Ukraine; Kreis 2; Update-Knopf; Launcher/Setup; GUI-Verbesserungen inkl. Erklär-Hilfetexte; CO₂-Preis-Sensitivität)
+> **Stand:** 13.08.2026 · **Version:** v1.4 (KI-Zusammenfassung via lokalem Ollama optional im Dashboard; Kreis 3 – 11 weitere ENTSO-E-Länder: Baltikum/Westbalkan/Moldau/Ukraine; Kreis 2; Update-Knopf; Launcher/Setup; GUI-Verbesserungen inkl. Erklär-Hilfetexte; CO₂-Preis-Sensitivität)
 > Diese Datei erklärt die beiden Kern-Skripte des Projekts und die wichtigsten
 > Funktionen & Formeln. Sie wird bei Änderungen am Code mitgepflegt.
 >
@@ -823,6 +823,42 @@ Prinzip wie Kreis 2. `EUROPE3 = EE, LV, LT, RS, BA, ME, MK, AL, XK, MD, UA`:
 - **Performance-Vereinfachung:** **Monte-Carlo und CO₂-Preis-Sweep nutzen Kreis 3
   nicht** (35 Auslandsknoten × viele Läufe wären unpraktikabel) – nur der Basis-Solve
   koppelt Kreis 3. Ehrlich benannt, kein Fehler.
+
+### 9.5 KI-Zusammenfassung (Ollama, optional)
+
+Nach dem Lösen zeigt das Dashboard einen Expander **„🧠 KI-Zusammenfassung"**
+unterhalb der Kennzahlen-Kacheln. Er lässt ein **lokales** KI-Modell (via
+[Ollama](https://ollama.com), HTTP-API auf `localhost:11434`) die bereits
+berechneten Kennzahlen in Fließtext zusammenfassen – analog zum entsprechenden
+Feature im Schwesterprojekt `pypsa-eur` (Dashboard dort).
+
+- **Funktionsweise:** `ollama_status()` prüft mit kurzem Timeout (1,5 s), ob
+  Ollama läuft und welche Modelle installiert sind. `ollama_generate()` schickt
+  Prompt + Modellname per POST an `/api/generate` (Timeout 180 s, `stream=False`,
+  `temperature=0.3`) und ist mit `st.cache_data(ttl=3600)` gecacht – derselbe
+  Prompt liefert innerhalb einer Stunde ohne erneuten Modell-Aufruf dieselbe
+  Antwort.
+- **Prompt-Inhalt:** Gesamtkosten, Ø Strompreis DE, CO₂-Emissionen vs. Budget,
+  EE-Anteil, Erzeugung gesamt, die drei größten Erzeuger-Carrier sowie der
+  aktive Kopplungsring (kein Kreis / Kreis 1 / 2 / 3). Das Modell wird
+  angewiesen, **keine zusätzlichen Zahlen zu erfinden** und antwortet in zwei
+  Abschnitten: **Zusammenfassung** (3–5 Sätze, für Studierende ohne Vorwissen)
+  und **Plausibilitäts-Check** (2–3 Sätze, grobe Einschätzung anhand von
+  Weltwissen über reale Energiesysteme – **keine belastbare Fehlerprüfung**).
+- **Datenschutz/Offline:** Läuft vollständig lokal auf dem PC, der die App
+  ausführt – keine Kennzahlen verlassen den Rechner, kein API-Key nötig.
+- **Optional, fehlerfrei ohne Ollama:** Ist Ollama nicht installiert/gestartet,
+  zeigt der Expander nur einen Installationshinweis; das restliche Dashboard
+  bleibt **vollständig unberührt** nutzbar (kein Hard-Fail, `requests`-Aufrufe
+  sind mit `try/except` abgesichert).
+- **Setup:** `setup.bat` bietet dafür Schritt **[4/4]** an – installiert Ollama
+  optional automatisch per `winget install --id Ollama.Ollama` und lädt danach
+  `llama3.2:3b` (~2 GB) via `ollama pull`. Findet `winget` nichts oder lehnt
+  man ab, bleibt der Schritt folgenlos übersprungen; manuell nachholbar über
+  [ollama.com](https://ollama.com) + `ollama pull llama3.2:3b` im Terminal.
+  Kein Ollama-Account nötig (der ist nur für Ollama Cloud/Turbo relevant,
+  wenn Modelle auf Ollamas Servern statt lokal laufen sollen – hier nicht
+  benötigt).
 
 ---
 

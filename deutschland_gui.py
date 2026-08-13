@@ -15,6 +15,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
+import requests
 import streamlit as st
 
 # ── Streamlit-Cloud: Secrets als Umgebungsvariablen bereitstellen ─────
@@ -141,7 +142,7 @@ if _light:
 st.markdown("""
 <div class="de-hero">
   <h1>⚡ Deutschland Energy Model
-      <span style="color:#9fc3e8;font-weight:600;font-size:1rem;">v1.3</span></h1>
+      <span style="color:#9fc3e8;font-weight:600;font-size:1rem;">v1.4</span></h1>
   <div class="sub">Kostenminimales Stromsystem für Deutschland · PyPSA-Kapazitätsausbau</div>
   <div class="de-chips">
     <span class="de-chip">5 Zonen + Offshore</span>
@@ -152,6 +153,7 @@ st.markdown("""
     <span class="de-chip">Kreis 1 · 11 Nachbarn</span>
     <span class="de-chip">+ Kreis 2 · 13</span>
     <span class="de-chip">+ Kreis 3 · 11</span>
+    <span class="de-chip">🧠 KI-Zusammenfassung (Ollama, lokal)</span>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -410,6 +412,41 @@ except Exception as _solve_err:
     st.stop()
 
 # ----------------------------------------------------------------------
+# Optionaler lokaler KI-Assistent (Ollama) für eine Fließtext-Zusammenfassung
+# der Kennzahlen. Läuft komplett offline/lokal, kein API-Key, kein Cloud-
+# Versand der Daten. Ist Ollama nicht installiert/gestartet, wird dieser
+# Abschnitt übersprungen – das Modell rechnet unabhängig davon vollständig.
+# ----------------------------------------------------------------------
+OLLAMA_URL = "http://localhost:11434"
+
+
+def ollama_status() -> tuple[bool, list[str]]:
+    """(erreichbar?, installierte Modellnamen) -- kurzer Timeout, damit die
+    App nicht hängt, wenn Ollama nicht läuft."""
+    try:
+        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=1.5)
+        r.raise_for_status()
+        return True, [m["name"] for m in r.json().get("models", [])]
+    except Exception:
+        return False, []
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def ollama_generate(prompt: str, model: str) -> str | None:
+    try:
+        r = requests.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False,
+                  "options": {"temperature": 0.3}},
+            timeout=180,
+        )
+        r.raise_for_status()
+        return r.json().get("response", "").strip()
+    except Exception:
+        return None
+
+
+# ----------------------------------------------------------------------
 # KPI-Zeile  (alle Erzeugungs-Kennzahlen auf Deutschland gefiltert)
 # ----------------------------------------------------------------------
 gekoppelt = dm.has_neighbors(n)
@@ -479,6 +516,73 @@ if gekoppelt:
     st.caption("🌍 **Nachbarländer gekoppelt** – Erzeugungs-KPIs (CO₂, EE, "
                "Erzeugung) zeigen **nur Deutschland**; die Gesamtkosten umfassen "
                "das gekoppelte Gesamtsystem. Import/Export im Tab **🌍 Nachbarn**.")
+
+# ── 🧠 KI-Zusammenfassung (optional, lokal via Ollama) ──────────────────
+with st.expander("🧠 KI-Zusammenfassung (lokal, optional)", expanded=False):
+    st.caption(
+        "Ein **lokales** KI-Modell (Ollama) fasst die Kennzahlen oben in "
+        "Fließtext zusammen. Läuft komplett offline auf diesem Rechner – "
+        "keine Daten verlassen den PC, kein API-Key nötig. Ohne Ollama "
+        "bleibt das Modell davon unberührt vollständig nutzbar."
+    )
+    _ollama_ok, _ollama_models = ollama_status()
+    if not _ollama_ok:
+        st.info(
+            "Kein lokales KI-Modell erreichbar (Ollama läuft nicht auf "
+            f"`{OLLAMA_URL}`). Installation: [ollama.com](https://ollama.com), "
+            "danach einmalig in einem Terminal z. B. `ollama pull llama3.2:3b` "
+            "(~2 GB, danach offline nutzbar)."
+        )
+    elif not _ollama_models:
+        st.info(
+            "Ollama läuft, aber es ist noch kein Modell heruntergeladen. "
+            "Einmalig in einem Terminal: `ollama pull llama3.2:3b`."
+        )
+    else:
+        _default_model = next(
+            (m for m in _ollama_models if "llama3.2" in m or "phi" in m.lower()),
+            _ollama_models[0],
+        )
+        _ki_model = st.selectbox("KI-Modell (lokal, kostenlos)", _ollama_models,
+                                 index=_ollama_models.index(_default_model),
+                                 key="ollama_model")
+        _top3 = dm.model_energy_by_carrier(n).sort_values(ascending=False).head(3)
+        _ring = ("Kreis 3 (restliches Europa)" if include_kreis3
+                 else "Kreis 2 (weitere Länder)" if include_europe
+                 else "Kreis 1 (11 Nachbarn)" if gekoppelt else "keine")
+        _kpi_bullets = [
+            f"Gesamtkosten: {dm.total_cost(n)/1e9:,.2f} Mrd €/a",
+            f"Ø Strompreis DE: {preis:,.1f} €/MWh",
+            f"CO₂-Emissionen DE: {co2:,.1f} Mt/a (Budget: {co2_budget_mt:,.1f} Mt/a)",
+            f"EE-Anteil DE: {ee:,.1f} %",
+            f"Erzeugung DE gesamt: {erz_twh:,.0f} TWh/a",
+            f"Größte Erzeuger DE: " +
+            ", ".join(f"{c} {v:,.0f} TWh/a" for c, v in _top3.items()),
+            f"Nachbarkopplung: {_ring}",
+        ]
+        _ki_prompt = (
+            "Du bist Assistent für ein Energiesystem-Dashboard (PyPSA, "
+            "kostenminimales Stromsystem für Deutschland). Dir werden unten "
+            "bereits berechnete Kennzahlen eines gelösten Optimierungslaufs "
+            "gegeben. Antworte auf Deutsch, in genau zwei Abschnitten:\n\n"
+            "**Zusammenfassung**: 3-5 Sätze für Studierende ohne Vorwissen. "
+            "Erfinde KEINE zusätzlichen Zahlen, nutze nur die gegebenen. Kein "
+            "Fazit-Geschwafel, direkt auf den Punkt.\n\n"
+            "**Plausibilitäts-Check**: 2-3 Sätze — wirkt etwas an den Zahlen "
+            "ungewöhnlich, unrealistisch oder auffällig im Vergleich zu deinem "
+            "Wissen über reale Energiesysteme (z. B. Kostenanteile, EE-Anteil, "
+            "welcher Träger dominiert)? Falls nichts auffällt, das kurz so "
+            "benennen statt etwas zu erfinden. Das ist nur eine grobe "
+            "Plausibilitätseinschätzung, keine belastbare Fehlerprüfung.\n\n"
+            + "\n".join(f"- {b}" for b in _kpi_bullets)
+        )
+        with st.spinner(f"🧠 {_ki_model} formuliert Zusammenfassung …"):
+            _ki_text = ollama_generate(_ki_prompt, _ki_model)
+        if _ki_text:
+            st.markdown(_ki_text)
+        else:
+            st.warning("Modell hat nicht geantwortet (Timeout oder Fehler) – "
+                       "Kennzahlen oben sind unabhängig davon vollständig.")
 
 FARBEN = dm.CARRIER_COLORS
 
